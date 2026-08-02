@@ -31,7 +31,10 @@ class TelAvivAdapter(Adapter):
                     self.query_url,
                     params={
                         "f": "json",
-                        "where": f"open_request >= DATE '{date_from.isoformat()}' AND open_request < DATE '{date_to.isoformat()}' + 1",
+                        "where": (
+                            f"open_request >= timestamp '{date_from.isoformat()} 00:00:00' "
+                            f"AND open_request <= timestamp '{date_to.isoformat()} 23:59:59'"
+                        ),
                         "outFields": self.fields,
                         "returnGeometry": "false",
                         "resultOffset": offset,
