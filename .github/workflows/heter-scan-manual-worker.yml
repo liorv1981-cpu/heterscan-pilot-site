@@ -34,13 +34,13 @@ jobs:
           cache: pip
           cache-dependency-path: worker/pyproject.toml
       - name: Install worker
-        shell: pwsh
+        shell: ${{ inputs.runner_label == 'jerusalem-local' && 'powershell' || 'pwsh' }}
         run: |
           $python = if ("${{ inputs.runner_label }}" -eq "jerusalem-local") { "C:\CODEX-My\היתרי\python.exe" } else { "python" }
           & $python -m pip install ./worker
       - name: Process run
         id: worker
-        shell: pwsh
+        shell: ${{ inputs.runner_label == 'jerusalem-local' && 'powershell' || 'pwsh' }}
         env:
           RUN_ID: ${{ inputs.run_id }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -56,5 +56,5 @@ jobs:
         if: steps.worker.outputs.exit_code == '75'
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: pwsh
+        shell: ${{ inputs.runner_label == 'jerusalem-local' && 'powershell' || 'pwsh' }}
         run: gh workflow run heter-scan-manual-worker.yml --ref "${{ github.ref_name }}" -f run_id="${{ inputs.run_id }}" -f runner_label="${{ inputs.runner_label }}"
