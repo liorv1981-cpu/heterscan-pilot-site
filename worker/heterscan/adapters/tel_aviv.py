@@ -15,7 +15,7 @@ class TelAvivAdapter(Adapter):
         [
             "oid_permit", "request_num", "permission_date", "permission_num", "open_request",
             "building_num", "sug_bakasha", "tochen_bakasha", "request_stage", "ms_tik_binyan",
-            "addresses", "gush", "helka", "sivug_makor",
+            "addresses", "sivug_makor",
         ]
     )
 
@@ -62,8 +62,6 @@ class TelAvivAdapter(Adapter):
                             application_number=request_number,
                             building_file_number=clean_text(attrs.get("ms_tik_binyan")) or None,
                             address=clean_text(attrs.get("addresses")) or None,
-                            block_number=clean_text(attrs.get("gush")) or None,
-                            parcel_number=clean_text(attrs.get("helka")) or None,
                             application_type=clean_text(attrs.get("sug_bakasha")) or None,
                             work_description=clean_text(attrs.get("tochen_bakasha")) or None,
                             submission_date=submitted,
