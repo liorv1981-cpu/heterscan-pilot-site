@@ -86,7 +86,9 @@ def run(run_id: str) -> int:
         final_status = "requires_review" if review_count else "completed_with_errors" if error_count else "completed"
         report_run = {**repository.get_run(run_id), "status": final_status}
         report_bytes, checksum = build_report(report_run, results, units)
-        safe_city = city["name_he"].replace(" ", "_").replace("־", "-")
+        # Storage object keys stay ASCII-only for maximum compatibility with
+        # signed URLs and every HTTP client used by the pilot.
+        safe_city = city["id"]
         storage_path = f"{run_id}/HETERSCAN_{safe_city}_{date_from}_{date_to}_{run_id}.xlsx"
         repository.upload_report(storage_path, report_bytes)
         repository.save_report_metadata(run_id, storage_path, checksum, len(report_bytes))

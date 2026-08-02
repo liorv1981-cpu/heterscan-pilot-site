@@ -133,7 +133,8 @@ class SupabaseRepository:
             f"{self.url}/storage/v1/object/reports/{storage_path}", content=content,
             headers={"Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "x-upsert": "true"},
         )
-        response.raise_for_status()
+        if response.is_error:
+            raise RuntimeError(f"Report upload failed ({response.status_code}): {response.text[:500]}")
 
     def save_report_metadata(self, run_id: str, storage_path: str, checksum: str, size: int) -> None:
         self._rest(
