@@ -40,7 +40,7 @@ jobs:
         if: inputs.runner_label == 'jerusalem-local'
         shell: powershell
         run: |
-          & 'C:\CODEX-My\היתרי\python.exe' -m pip install ./worker
+          & 'C:\HETERSCAN\Python312\python.exe' -m pip install ./worker
       - name: Process run on hosted runner
         if: inputs.runner_label != 'jerusalem-local'
         id: worker_hosted
@@ -66,7 +66,7 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           MAX_WORKER_SECONDS: "19800"
         run: |
-          & 'C:\CODEX-My\היתרי\python.exe' -m heterscan.runner --run-id "$env:RUN_ID"
+          & 'C:\HETERSCAN\Python312\python.exe' -m heterscan.runner --run-id "$env:RUN_ID"
           $code = $LASTEXITCODE
           "exit_code=$code" >> $env:GITHUB_OUTPUT
           if ($code -ne 0 -and $code -ne 75) { exit $code }
