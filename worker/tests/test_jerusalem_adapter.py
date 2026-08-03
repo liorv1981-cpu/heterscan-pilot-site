@@ -34,10 +34,16 @@ class _FakeClient:
                 {"tik_num": "2025/0123.00"},
             ])
         if procedure == 242700447:
+            status = (
+                "אושר ע\"י מהנדס העיר"
+                if parameters["tikNum"] == "2023/0042.01"
+                else "הוכנה טיוטת היתר בניה"
+            )
             return _Response([{
                 "shemRehov": "מסילת ישרים",
                 "misparBait": "18",
-                "teurStatus": "הוכנה טיוטת היתר בניה",
+                "teurStatus": status,
+                "fullTaarihStatus": "22/06/2026",
             }])
         if procedure == 242700451:
             rows = [
@@ -66,6 +72,7 @@ def test_skips_case_years_outside_requested_window(monkeypatch):
 
     assert [record.application_number for record in records] == ["2023/0042.01", "2025/0123.00"]
     assert [record.is_permit_issued for record in records] == [False, True]
+    assert [record.is_approved for record in records] == [True, True]
     detail_case_numbers = [
         parameters.get("tikNum") or parameters["TikNum"]
         for procedure, parameters in _FakeClient.instances[0].calls

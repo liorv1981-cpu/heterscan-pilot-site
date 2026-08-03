@@ -62,8 +62,19 @@ class JerusalemAdapter(Adapter):
                 process_rows = self._call(client, 242700451, {"SystemID": self.system_id, "TikNum": application_number})
                 detail = detail_rows[0] if detail_rows else {}
                 detail.pop("baaleiInyanList", None)
-                dates = [parse_date(row.get("execDateStr")) for row in process_rows]
-                submitted = min((value for value in dates if value), default=None)
+                all_dates = []
+                filing_dates = []
+                for row in process_rows:
+                    event_date = parse_date(row.get("execDateStr"))
+                    if not event_date:
+                        continue
+                    all_dates.append(event_date)
+                    process_label = normalized_key(
+                        f"{clean_text(row.get('processText'))} {clean_text(row.get('stepCodeText'))}"
+                    )
+                    if any(term in process_label for term in ("הגשה", "קליטת בקשה", "פתיחת תיק")):
+                        filing_dates.append(event_date)
+                submitted = min(filing_dates or all_dates, default=None)
                 if not in_range(submitted, date_from, date_to):
                     continue
                 status = clean_text(detail.get("teurStatus") or candidate.get("teurStatus"))
@@ -75,12 +86,19 @@ class JerusalemAdapter(Adapter):
                     if event_date and is_terminal_step:
                         terminal_events.append((event_date, clean_text(row.get("stepCodeText"))))
                 status_key = normalized_key(status)
-                status_date = parse_date(detail.get("fullTaarihStatus") or candidate.get("taarih_status"))
-                status_explicit = "היתר" in status_key and any(term in status_key for term in ("הופק", "הוצא", "בתוקף"))
-                permit_date = min((item[0] for item in terminal_events), default=status_date if status_explicit else None)
+                status_date = parse_date(candidate.get("taarih_status") or detail.get("fullTaarihStatus"))
+                permit_status_explicit = "היתר" in status_key and any(
+                    term in status_key for term in ("הופק", "הוצא", "בתוקף")
+                )
+                approval_status_explicit = "אושר" in status_key and "מהנדס העיר" in status_key
+                permit_date = min(
+                    (item[0] for item in terminal_events),
+                    default=status_date if permit_status_explicit else None,
+                )
                 permit_number = clean_text(detail.get("misparHeter") or detail.get("heter_num")) or None
-                issued = bool(permit_date and (terminal_events or status_explicit))
-                approval_date = permit_date if issued else None
+                issued = bool(permit_date and (terminal_events or permit_status_explicit))
+                approval_date = permit_date or (status_date if approval_status_explicit else None)
+                approved = approval_date is not None
                 source_url = f"https://ykpubdata.jerusalem.muni.il/#/Rishui/BakashalInfo?TikNum={application_number}&SystemCode={self.system_id}"
                 output.append(
                     ApplicationRecord(
@@ -93,8 +111,8 @@ class JerusalemAdapter(Adapter):
                         work_description=clean_text(detail.get("mahutBakasha") or candidate.get("mahut_bakasha")) or None,
                         submission_date=submitted,
                         approval_date=approval_date,
-                        is_approved=issued,
-                        approval_confidence="high" if issued else None,
+                        is_approved=approved,
+                        approval_confidence="high" if approved else None,
                         permit_number=permit_number,
                         permit_issue_date=permit_date,
                         permit_status_original=status or None,
