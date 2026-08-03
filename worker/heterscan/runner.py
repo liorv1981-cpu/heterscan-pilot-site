@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import os
 import socket
 import sys
@@ -48,12 +49,32 @@ def run(run_id: str) -> int:
             units = repository.claim_units(run_id, worker_id, limit=20)
             if not units:
                 break
-            for unit in units:
+            collected = []
+            if adapter.name == "jerusalem":
+                with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+                    future_to_unit = {
+                        executor.submit(adapter.collect, unit, date_from, date_to): unit for unit in units
+                    }
+                    for future in concurrent.futures.as_completed(future_to_unit):
+                        unit = future_to_unit[future]
+                        try:
+                            collected.append((unit, future.result(), None))
+                        except Exception as error:
+                            collected.append((unit, None, error))
+            else:
+                for unit in units:
+                    try:
+                        collected.append((unit, adapter.collect(unit, date_from, date_to), None))
+                    except Exception as error:
+                        collected.append((unit, None, error))
+
+            for unit, records, collection_error in collected:
                 try:
-                    records = adapter.collect(unit, date_from, date_to)
-                    for record in records:
+                    if collection_error:
+                        raise collection_error
+                    for record in records or []:
                         repository.save_application(run_id, record)
-                    repository.complete_unit(unit.id, len(records))
+                    repository.complete_unit(unit.id, len(records or []))
                 except AdapterReviewRequired as error:
                     repository.fail_unit(unit.id, str(error), review=True)
                     repository.log(run_id, "warning", "unit_requires_review", {"unit": unit.unit_key, "error": str(error)})

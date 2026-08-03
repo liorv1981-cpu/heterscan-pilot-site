@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import threading
+import time
 from datetime import date
 
 from ..domain import ApplicationRecord, SearchUnit
@@ -13,8 +15,16 @@ class JerusalemAdapter(Adapter):
     name = "jerusalem"
     api_url = "https://jerbasicserviceapi.jerusalem.muni.il/api/Db/ExecuteGetJSON"
     system_id = "26400046"
+    _rate_lock = threading.Lock()
+    _next_request_at = 0.0
+    _request_interval_seconds = 0.8
 
     def _call(self, client: PublicHttpClient, procedure: int, parameters: dict) -> list[dict]:
+        with self._rate_lock:
+            wait = self._next_request_at - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+            type(self)._next_request_at = time.monotonic() + self._request_interval_seconds
         return client.request(
             "POST", self.api_url,
             json={"ProcName": procedure, "Cnn": "cnnGisYk", "Parameters": parameters},
@@ -22,7 +32,7 @@ class JerusalemAdapter(Adapter):
         ).json() or []
 
     def collect(self, unit: SearchUnit, date_from: date, date_to: date) -> list[ApplicationRecord]:
-        client = PublicHttpClient(delay_seconds=0.7)
+        client = PublicHttpClient(delay_seconds=0)
         output: list[ApplicationRecord] = []
         street_code = clean_text(unit.payload.get("streetCode"))
         street_name = clean_text(unit.payload.get("streetName")) or None
@@ -36,10 +46,11 @@ class JerusalemAdapter(Adapter):
                 application_number = clean_text(candidate.get("tik_num"))
                 if not application_number:
                     continue
-                # The street query returns decades of cases. Avoid two detail calls for
-                # cases whose file year cannot possibly overlap the requested window.
+                # Follow-up case numbers can retain the original file year for several
+                # years. Keep a three-year lookback while avoiding decades of detail calls.
                 year_match = re.match(r"^(\d{4})/", application_number)
-                if year_match and not date_from.year <= int(year_match.group(1)) <= date_to.year:
+                earliest_file_year = date_from.year - 2
+                if year_match and not earliest_file_year <= int(year_match.group(1)) <= date_to.year:
                     continue
                 detail_rows = self._call(client, 242700447, {"tikNum": application_number, "systemCode": self.system_id})
                 process_rows = self._call(client, 242700451, {"SystemID": self.system_id, "TikNum": application_number})

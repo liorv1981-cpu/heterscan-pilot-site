@@ -28,7 +28,11 @@ class _FakeClient:
         parameters = json["Parameters"]
         self.calls.append((procedure, parameters))
         if procedure == 242700437:
-            return _Response([{"tik_num": "2020/0001.00"}, {"tik_num": "2025/0123.00"}])
+            return _Response([
+                {"tik_num": "2020/0001.00"},
+                {"tik_num": "2023/0042.01"},
+                {"tik_num": "2025/0123.00"},
+            ])
         if procedure == 242700447:
             return _Response([{"shemRehov": "מסילת ישרים", "misparBait": "18"}])
         if procedure == 242700451:
@@ -50,10 +54,13 @@ def test_skips_case_years_outside_requested_window(monkeypatch):
 
     records = adapter.collect(unit, date(2025, 7, 1), date(2025, 7, 31))
 
-    assert [record.application_number for record in records] == ["2025/0123.00"]
+    assert [record.application_number for record in records] == ["2023/0042.01", "2025/0123.00"]
     detail_case_numbers = [
         parameters.get("tikNum") or parameters["TikNum"]
         for procedure, parameters in _FakeClient.instances[0].calls
         if procedure in (242700447, 242700451)
     ]
-    assert detail_case_numbers == ["2025/0123.00", "2025/0123.00"]
+    assert detail_case_numbers == [
+        "2023/0042.01", "2023/0042.01",
+        "2025/0123.00", "2025/0123.00",
+    ]
