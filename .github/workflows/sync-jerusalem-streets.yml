@@ -1,0 +1,29 @@
+name: Sync Jerusalem municipal streets
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: heter-scan-pilot-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: jerusalem-local
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install worker
+        shell: powershell
+        run: |
+          & 'C:\HETERSCAN\Python312\python.exe' -m pip install ./worker
+      - name: Synchronize catalog
+        shell: powershell
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          & 'C:\HETERSCAN\Python312\python.exe' -m heterscan.sync_jerusalem_streets
