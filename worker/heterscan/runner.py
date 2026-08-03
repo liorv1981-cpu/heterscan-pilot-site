@@ -24,6 +24,39 @@ def _parse_date(value: str) -> date:
     return date.fromisoformat(value)
 
 
+def _finalize_report(
+    repository: SupabaseRepository,
+    run_id: str,
+    city_id: str,
+    date_from: date,
+    date_to: date,
+    final_status: str,
+) -> int:
+    results = repository.run_results(run_id)
+    units = repository.run_units(run_id)
+    report_run = {**repository.get_run(run_id), "status": final_status}
+    report_bytes, checksum = build_report(report_run, results, units)
+    storage_path = f"{run_id}/HETERSCAN_{city_id}_{date_from}_{date_to}_{run_id}.xlsx"
+    repository.upload_report(storage_path, report_bytes)
+    repository.save_report_metadata(run_id, storage_path, checksum, len(report_bytes))
+    counts = repository.progress_counts(run_id)
+    repository.update_run(
+        run_id,
+        {
+            **counts,
+            "status": final_status,
+            "report_path": storage_path,
+            "completed_at": _iso_now(),
+            "heartbeat_at": _iso_now(),
+            "lock_owner": None,
+            "lock_expires_at": None,
+        },
+    )
+    event = "worker_cancelled" if final_status == "cancelled" else "worker_completed"
+    repository.log(run_id, "info", event, {"status": final_status, **counts})
+    return 0
+
+
 def run(run_id: str) -> int:
     repository = SupabaseRepository()
     worker_id = f"{socket.gethostname()}:{os.getpid()}"
@@ -45,7 +78,12 @@ def run(run_id: str) -> int:
         date_from, date_to = _parse_date(run_row["date_from"]), _parse_date(run_row["date_to"])
         repository.log(run_id, "info", "worker_started", {"worker_id": worker_id, "adapter": adapter.name})
 
+        if repository.cancellation_requested(run_id):
+            return _finalize_report(repository, run_id, city["id"], date_from, date_to, "cancelled")
+
         while time.monotonic() - started < max_seconds:
+            if repository.cancellation_requested(run_id):
+                return _finalize_report(repository, run_id, city["id"], date_from, date_to, "cancelled")
             units = repository.claim_units(run_id, worker_id, limit=20)
             if not units:
                 break
@@ -87,6 +125,12 @@ def run(run_id: str) -> int:
                 {**counts, "heartbeat_at": _iso_now(), "lock_expires_at": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()},
             )
 
+            if repository.cancellation_requested(run_id):
+                return _finalize_report(repository, run_id, city["id"], date_from, date_to, "cancelled")
+
+        if repository.cancellation_requested(run_id):
+            return _finalize_report(repository, run_id, city["id"], date_from, date_to, "cancelled")
+
         remaining = repository._rest(
             "GET", f"run_units?run_id=eq.{run_id}&status=in.(pending,processing)&select=id&limit=1"
         ).json()
@@ -98,32 +142,13 @@ def run(run_id: str) -> int:
             repository.log(run_id, "info", "worker_timebox_reached", {"remaining_units": len(remaining)})
             return 75
 
-        results = repository.run_results(run_id)
-        units = repository.run_units(run_id)
         summary = repository.progress_summary(run_id)
         final_status = (
             "requires_review" if summary["units_requires_review"]
             else "completed_with_errors" if summary["units_failed"]
             else "completed"
         )
-        report_run = {**repository.get_run(run_id), "status": final_status}
-        report_bytes, checksum = build_report(report_run, results, units)
-        # Storage object keys stay ASCII-only for maximum compatibility with
-        # signed URLs and every HTTP client used by the pilot.
-        safe_city = city["id"]
-        storage_path = f"{run_id}/HETERSCAN_{safe_city}_{date_from}_{date_to}_{run_id}.xlsx"
-        repository.upload_report(storage_path, report_bytes)
-        repository.save_report_metadata(run_id, storage_path, checksum, len(report_bytes))
-        counts = repository.progress_counts(run_id)
-        repository.update_run(
-            run_id,
-            {
-                **counts, "status": final_status, "report_path": storage_path,
-                "completed_at": _iso_now(), "heartbeat_at": _iso_now(), "lock_owner": None, "lock_expires_at": None,
-            },
-        )
-        repository.log(run_id, "info", "worker_completed", {"status": final_status, **counts})
-        return 0
+        return _finalize_report(repository, run_id, city["id"], date_from, date_to, final_status)
     except Exception as error:
         try:
             repository.update_run(

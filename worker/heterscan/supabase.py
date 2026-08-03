@@ -63,6 +63,14 @@ class SupabaseRepository:
     def update_run(self, run_id: str, values: dict[str, Any]) -> None:
         self._rest("PATCH", f"runs?id=eq.{quote(run_id)}", json=values)
 
+    def cancellation_requested(self, run_id: str) -> bool:
+        rows = self._rest(
+            "GET", f"runs?id=eq.{quote(run_id)}&select=cancel_requested_at"
+        ).json()
+        if not rows:
+            raise RuntimeError(f"Run {run_id} not found")
+        return bool(rows[0].get("cancel_requested_at"))
+
     def claim_units(self, run_id: str, worker_id: str, limit: int = 20) -> list[SearchUnit]:
         rows = self._rest(
             "POST", "rpc/claim_run_units", json={"p_run_id": run_id, "p_worker_id": worker_id, "p_limit": limit}

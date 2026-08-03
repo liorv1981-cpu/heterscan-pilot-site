@@ -68,3 +68,16 @@ def test_progress_summary_uses_database_aggregate() -> None:
         "applications_found": 12,
         "permits_found": 4,
     }
+
+
+def test_cancellation_requested_reads_persistent_run_flag() -> None:
+    repository = SupabaseRepository.__new__(SupabaseRepository)
+
+    def fake_rest(method: str, path: str, **_: Any) -> FakeResponse:
+        assert method == "GET"
+        assert path == "runs?id=eq.run-1&select=cancel_requested_at"
+        return FakeResponse([{"cancel_requested_at": "2026-08-03T20:00:00+00:00"}])
+
+    repository._rest = fake_rest  # type: ignore[method-assign]
+
+    assert repository.cancellation_requested("run-1") is True
