@@ -24,6 +24,12 @@ def _parse_date(value: str) -> date:
     return date.fromisoformat(value)
 
 
+def _claim_limit(adapter_name: str) -> int:
+    # Non-Jerusalem adapters are sequential. Claiming only one unit keeps a
+    # user-requested stop responsive and avoids leaving a large claimed batch.
+    return 20 if adapter_name == "jerusalem" else 1
+
+
 def _finalize_report(
     repository: SupabaseRepository,
     run_id: str,
@@ -84,7 +90,7 @@ def run(run_id: str) -> int:
         while time.monotonic() - started < max_seconds:
             if repository.cancellation_requested(run_id):
                 return _finalize_report(repository, run_id, city["id"], date_from, date_to, "cancelled")
-            units = repository.claim_units(run_id, worker_id, limit=20)
+            units = repository.claim_units(run_id, worker_id, limit=_claim_limit(adapter.name))
             if not units:
                 break
             collected = []
