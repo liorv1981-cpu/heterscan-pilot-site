@@ -18,6 +18,12 @@ class JerusalemAdapter(Adapter):
     _rate_lock = threading.Lock()
     _next_request_at = 0.0
     _request_interval_seconds = 0.8
+    _terminal_permit_steps = {
+        normalized_key("הוצאת היתר בניה"),
+        normalized_key("הוצאת היתר בנייה"),
+        normalized_key("מסירת היתר בניה"),
+        normalized_key("מסירת היתר בנייה"),
+    }
 
     def _call(self, client: PublicHttpClient, procedure: int, parameters: dict) -> list[dict]:
         with self._rate_lock:
@@ -65,7 +71,8 @@ class JerusalemAdapter(Adapter):
                 for row in process_rows:
                     label = normalized_key(row.get("stepCodeText"))
                     event_date = parse_date(row.get("execDateStr"))
-                    if event_date and "היתר" in label and any(term in label for term in ("הוצאת", "מסירת", "חתום")):
+                    is_terminal_step = label in self._terminal_permit_steps or "הוצאת היתר דיגיטלי חתום" in label
+                    if event_date and is_terminal_step:
                         terminal_events.append((event_date, clean_text(row.get("stepCodeText"))))
                 status_key = normalized_key(status)
                 status_date = parse_date(detail.get("fullTaarihStatus") or candidate.get("taarih_status"))

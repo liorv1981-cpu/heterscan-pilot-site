@@ -34,9 +34,19 @@ class _FakeClient:
                 {"tik_num": "2025/0123.00"},
             ])
         if procedure == 242700447:
-            return _Response([{"shemRehov": "מסילת ישרים", "misparBait": "18"}])
+            return _Response([{
+                "shemRehov": "מסילת ישרים",
+                "misparBait": "18",
+                "teurStatus": "הוכנה טיוטת היתר בניה",
+            }])
         if procedure == 242700451:
-            return _Response([{"execDateStr": "15/07/2025", "stepCodeText": "פתיחת תיק"}])
+            rows = [
+                {"execDateStr": "15/07/2025", "stepCodeText": "פתיחת תיק"},
+                {"execDateStr": "11/06/2026", "stepCodeText": "הפקת תצהירים לקראת הוצאת היתר"},
+            ]
+            if parameters["TikNum"] == "2025/0123.00":
+                rows.append({"execDateStr": "20/06/2026", "stepCodeText": "הוצאת היתר בניה"})
+            return _Response(rows)
         raise AssertionError(f"Unexpected procedure {procedure}")
 
 
@@ -55,6 +65,7 @@ def test_skips_case_years_outside_requested_window(monkeypatch):
     records = adapter.collect(unit, date(2025, 7, 1), date(2025, 7, 31))
 
     assert [record.application_number for record in records] == ["2023/0042.01", "2025/0123.00"]
+    assert [record.is_permit_issued for record in records] == [False, True]
     detail_case_numbers = [
         parameters.get("tikNum") or parameters["TikNum"]
         for procedure, parameters in _FakeClient.instances[0].calls
