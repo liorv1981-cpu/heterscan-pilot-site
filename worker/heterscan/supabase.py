@@ -32,6 +32,16 @@ class SupabaseRepository:
         response.raise_for_status()
         return response
 
+    def _get_all(self, path: str, *, page_size: int = 1000) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        separator = "&" if "?" in path else "?"
+        for offset in range(0, 1_000_000_000, page_size):
+            page = self._rest("GET", f"{path}{separator}limit={page_size}&offset={offset}").json()
+            rows.extend(page)
+            if len(page) < page_size:
+                return rows
+        raise RuntimeError("Supabase pagination exceeded the safety limit")
+
     def get_run(self, run_id: str) -> dict[str, Any]:
         rows = self._rest("GET", f"run_overview?id=eq.{quote(run_id)}&select=*").json()
         if not rows:
@@ -105,25 +115,28 @@ class SupabaseRepository:
             )
         return application["id"]
 
+    def progress_summary(self, run_id: str) -> dict[str, int]:
+        rows = self._rest("POST", "rpc/get_run_progress", json={"p_run_id": run_id}).json()
+        if not rows:
+            raise RuntimeError(f"Progress aggregate for run {run_id} returned no rows")
+        return {key: int(value or 0) for key, value in rows[0].items()}
+
     def progress_counts(self, run_id: str) -> dict[str, int]:
-        units = self._rest("GET", f"run_units?run_id=eq.{quote(run_id)}&select=status").json()
-        results = self._rest(
-            "GET", f"run_applications?run_id=eq.{quote(run_id)}&select=application:applications(is_permit_issued)"
-        ).json()
+        summary = self.progress_summary(run_id)
         return {
-            "units_completed": sum(row["status"] in ("completed", "failed", "requires_review") for row in units),
-            "applications_found": len(results),
-            "permits_found": sum(bool(row.get("application", {}).get("is_permit_issued")) for row in results),
+            "units_completed": summary["units_completed"],
+            "applications_found": summary["applications_found"],
+            "permits_found": summary["permits_found"],
         }
 
     def run_results(self, run_id: str) -> list[dict[str, Any]]:
-        rows = self._rest(
-            "GET", f"run_applications?run_id=eq.{quote(run_id)}&select=discovered_at,application:applications(*)"
-        ).json()
+        rows = self._get_all(
+            f"run_applications?run_id=eq.{quote(run_id)}&select=discovered_at,application:applications(*)"
+        )
         return [{**row["application"], "discovered_at": row["discovered_at"]} for row in rows]
 
     def run_units(self, run_id: str) -> list[dict[str, Any]]:
-        return self._rest("GET", f"run_units?run_id=eq.{quote(run_id)}&select=*&order=sequence").json()
+        return self._get_all(f"run_units?run_id=eq.{quote(run_id)}&select=*&order=sequence")
 
     def log(self, run_id: str, level: str, event: str, context: dict[str, Any] | None = None) -> None:
         self._rest("POST", "run_logs", json={"run_id": run_id, "level": level, "event": event, "context": context or {}})

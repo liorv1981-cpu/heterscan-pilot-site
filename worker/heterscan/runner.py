@@ -28,8 +28,6 @@ def run(run_id: str) -> int:
     worker_id = f"{socket.gethostname()}:{os.getpid()}"
     started = time.monotonic()
     max_seconds = int(os.environ.get("MAX_WORKER_SECONDS", "19800"))
-    review_count = 0
-    error_count = 0
     try:
         claimed = repository._rest(
             "POST", "rpc/claim_run", json={"p_run_id": run_id, "p_worker_id": worker_id, "p_ttl_minutes": 10}
@@ -57,21 +55,19 @@ def run(run_id: str) -> int:
                         repository.save_application(run_id, record)
                     repository.complete_unit(unit.id, len(records))
                 except AdapterReviewRequired as error:
-                    review_count += 1
                     repository.fail_unit(unit.id, str(error), review=True)
                     repository.log(run_id, "warning", "unit_requires_review", {"unit": unit.unit_key, "error": str(error)})
                 except Exception as error:  # A single street must not erase the rest of the run.
-                    error_count += 1
                     repository.fail_unit(unit.id, str(error))
                     repository.log(run_id, "error", "unit_failed", {"unit": unit.unit_key, "error": str(error)[:1000]})
-                counts = repository.progress_counts(run_id)
-                repository.update_run(
-                    run_id,
-                    {**counts, "heartbeat_at": _iso_now(), "lock_expires_at": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()},
-                )
+            counts = repository.progress_counts(run_id)
+            repository.update_run(
+                run_id,
+                {**counts, "heartbeat_at": _iso_now(), "lock_expires_at": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()},
+            )
 
         remaining = repository._rest(
-            "GET", f"run_units?run_id=eq.{run_id}&status=in.(pending,processing)&select=id"
+            "GET", f"run_units?run_id=eq.{run_id}&status=in.(pending,processing)&select=id&limit=1"
         ).json()
         if remaining:
             repository.update_run(
@@ -83,7 +79,12 @@ def run(run_id: str) -> int:
 
         results = repository.run_results(run_id)
         units = repository.run_units(run_id)
-        final_status = "requires_review" if review_count else "completed_with_errors" if error_count else "completed"
+        summary = repository.progress_summary(run_id)
+        final_status = (
+            "requires_review" if summary["units_requires_review"]
+            else "completed_with_errors" if summary["units_failed"]
+            else "completed"
+        )
         report_run = {**repository.get_run(run_id), "status": final_status}
         report_bytes, checksum = build_report(report_run, results, units)
         # Storage object keys stay ASCII-only for maximum compatibility with
