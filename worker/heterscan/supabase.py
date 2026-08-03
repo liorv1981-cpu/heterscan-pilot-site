@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterable
+from datetime import date, datetime
 from typing import Any
 from urllib.parse import quote
 
@@ -9,6 +10,17 @@ import httpx
 
 from .domain import ApplicationRecord, SearchUnit
 from .normalize import content_hash, record_identity
+
+
+def _json_safe(value: Any) -> Any:
+    """Convert nested municipal payloads and evidence into JSON-native values."""
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(item) for item in value]
+    return value
 
 
 class SupabaseRepository:
@@ -83,7 +95,9 @@ class SupabaseRepository:
             "building_file_number": record.building_file_number,
         }
         identity = record_identity(record.city_id, record.application_number, fallback)
-        database_record = record.to_database(run_id=run_id, identity_key=identity, content_hash=content_hash(record.raw_data))
+        database_record = _json_safe(
+            record.to_database(run_id=run_id, identity_key=identity, content_hash=content_hash(record.raw_data))
+        )
         response = self._rest(
             "POST", "applications?on_conflict=city_id,identity_key&select=id,content_hash",
             headers={"Prefer": "resolution=merge-duplicates,return=representation"}, json=database_record,
@@ -97,7 +111,7 @@ class SupabaseRepository:
         self._rest(
             "POST", "application_versions?on_conflict=application_id,content_hash",
             headers={"Prefer": "resolution=ignore-duplicates"},
-            json={"application_id": application["id"], "run_id": run_id, "content_hash": application["content_hash"], "snapshot": record.raw_data},
+            json={"application_id": application["id"], "run_id": run_id, "content_hash": application["content_hash"], "snapshot": _json_safe(record.raw_data)},
         )
         events = []
         if record.is_approved:
@@ -110,7 +124,7 @@ class SupabaseRepository:
                 headers={"Prefer": "resolution=ignore-duplicates"},
                 json={
                     "application_id": application["id"], "run_id": run_id, **event,
-                    "original_status": record.permit_status_original, "evidence": record.evidence,
+                    "original_status": record.permit_status_original, "evidence": _json_safe(record.evidence),
                 },
             )
         return application["id"]

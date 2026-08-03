@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from datetime import date, datetime, timezone
 from typing import Any
 
-from heterscan.supabase import SupabaseRepository
+from heterscan.supabase import SupabaseRepository, _json_safe
 
 
 class FakeResponse:
@@ -11,6 +12,18 @@ class FakeResponse:
 
     def json(self) -> Any:
         return self.data
+
+
+def test_json_safe_serializes_nested_dates_and_tuples() -> None:
+    value = {
+        "event": (date(2025, 7, 1), "issued"),
+        "nested": [{"seen_at": datetime(2026, 8, 3, 4, 0, tzinfo=timezone.utc)}],
+    }
+
+    assert _json_safe(value) == {
+        "event": ["2025-07-01", "issued"],
+        "nested": [{"seen_at": "2026-08-03T04:00:00+00:00"}],
+    }
 
 
 def test_get_all_pages_past_supabase_default_limit() -> None:
