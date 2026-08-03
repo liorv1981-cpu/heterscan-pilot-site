@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import date
 
 from ..domain import ApplicationRecord, SearchUnit
@@ -34,6 +35,11 @@ class JerusalemAdapter(Adapter):
             for candidate in candidates:
                 application_number = clean_text(candidate.get("tik_num"))
                 if not application_number:
+                    continue
+                # The street query returns decades of cases. Avoid two detail calls for
+                # cases whose file year cannot possibly overlap the requested window.
+                year_match = re.match(r"^(\d{4})/", application_number)
+                if year_match and not date_from.year <= int(year_match.group(1)) <= date_to.year:
                     continue
                 detail_rows = self._call(client, 242700447, {"tikNum": application_number, "systemCode": self.system_id})
                 process_rows = self._call(client, 242700451, {"SystemID": self.system_id, "TikNum": application_number})
