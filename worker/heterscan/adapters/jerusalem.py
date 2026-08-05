@@ -17,7 +17,8 @@ class JerusalemAdapter(Adapter):
     system_id = "26400046"
     _rate_lock = threading.Lock()
     _next_request_at = 0.0
-    _request_interval_seconds = 0.8
+    # A controlled eight-request probe completed without throttling at 0.6s.
+    _request_interval_seconds = 0.6
     _terminal_permit_steps = {
         normalized_key("הוצאת היתר בניה"),
         normalized_key("הוצאת היתר בנייה"),
