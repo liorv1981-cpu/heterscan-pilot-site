@@ -7,7 +7,7 @@ from collections.abc import Callable
 
 import httpx
 
-from .domain import AdapterReviewRequired
+from .domain import AdapterRateLimited, AdapterReviewRequired
 
 
 class AdaptiveRateLimiter:
@@ -38,20 +38,23 @@ class AdaptiveRateLimiter:
             with self._lock:
                 now = time.monotonic()
                 if now < self._blocked_until:
-                    wait_seconds = self._blocked_until - now
-                    slot_reserved = False
+                    raise AdapterRateLimited(
+                        "המקור נמצא בחלון צינון לאחר הגבלת קצב (429).",
+                        retry_after_seconds=self._blocked_until - now,
+                    )
                 else:
                     scheduled_at = max(now, self._next_request_at)
                     self._next_request_at = scheduled_at + (1.0 / self._current_rate)
                     wait_seconds = scheduled_at - now
-                    slot_reserved = True
             if wait_seconds > 0:
                 time.sleep(wait_seconds)
-            if not slot_reserved:
-                continue
             with self._lock:
-                if time.monotonic() < self._blocked_until:
-                    continue
+                remaining = self._blocked_until - time.monotonic()
+                if remaining > 0:
+                    raise AdapterRateLimited(
+                        "המקור נמצא בחלון צינון לאחר הגבלת קצב (429).",
+                        retry_after_seconds=remaining,
+                    )
             return
 
     def penalize(self, *, retry_after_seconds: float | None = None) -> None:
@@ -121,14 +124,28 @@ class PublicHttpClient:
                 captcha = "captcha" in response.text[:5000].lower()
                 if response.status_code == 429:
                     retry_after = response.headers.get("Retry-After")
-                    retry_after_seconds = float(retry_after) if retry_after and retry_after.isdigit() else None
-                    cooldown_seconds = retry_after_seconds or min(120.0, 30.0 * (attempt + 1))
+                    retry_after_seconds = (
+                        float(retry_after) if retry_after and retry_after.isdigit() else None
+                    )
+                    if self.rate_limiter:
+                        previous_penalties = int(self.rate_limiter.snapshot()["penalties"])
+                        cooldown_seconds = retry_after_seconds or min(
+                            900.0, 60.0 * (2 ** min(4, previous_penalties))
+                        )
+                    else:
+                        cooldown_seconds = retry_after_seconds or min(120.0, 30.0 * (attempt + 1))
                     if self.rate_limiter:
                         self.rate_limiter.penalize(retry_after_seconds=cooldown_seconds)
-                    last_error = AdapterReviewRequired("המקור הגביל את קצב הפניות (429).")
+                        raise AdapterRateLimited(
+                            "המקור הגביל את קצב הפניות (429).",
+                            retry_after_seconds=cooldown_seconds,
+                        )
+                    last_error = AdapterRateLimited(
+                        "המקור הגביל את קצב הפניות (429).",
+                        retry_after_seconds=cooldown_seconds,
+                    )
                     if attempt + 1 < attempts:
-                        if not self.rate_limiter:
-                            time.sleep(cooldown_seconds + random.random())
+                        time.sleep(cooldown_seconds + random.random())
                         continue
                     raise last_error
                 if response.status_code == 403 or captcha:

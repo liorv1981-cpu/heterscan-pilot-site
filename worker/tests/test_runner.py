@@ -3,7 +3,7 @@ import time
 from datetime import date
 
 from heterscan.domain import SearchUnit
-from heterscan.runner import _claim_limit, _collect_wave
+from heterscan.runner import _claim_limit, _collect_wave, _wait_for_source_cooldown
 
 
 def test_complot_claims_twenty_units_for_batched_parallel_work() -> None:
@@ -46,3 +46,14 @@ def test_complot_collection_respects_adaptive_parallelism() -> None:
 
     assert len(results) == 4
     assert adapter.maximum_active == 2
+
+
+def test_source_cooldown_stops_immediately_when_cancelled() -> None:
+    class FakeRepository:
+        def cancellation_requested(self, _run_id):
+            return True
+
+        def update_run(self, _run_id, _fields):
+            raise AssertionError("cancelled cooldown must not write a heartbeat")
+
+    assert not _wait_for_source_cooldown(FakeRepository(), "run-1", 60, poll_seconds=0.001)

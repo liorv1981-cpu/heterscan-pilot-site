@@ -9,7 +9,7 @@ import time
 from datetime import date, datetime, timedelta, timezone
 
 from .adapters import ComplotAdapter, JerusalemAdapter, TelAvivAdapter
-from .domain import AdapterReviewRequired
+from .domain import AdapterRateLimited, AdapterReviewRequired
 from .reporting import build_report
 from .supabase import SupabaseRepository
 
@@ -57,6 +57,27 @@ def _collect_wave(adapter, units, date_from: date, date_to: date):
         except Exception as error:
             collected.append((unit, None, error))
     return collected
+
+
+def _wait_for_source_cooldown(
+    repository: SupabaseRepository,
+    run_id: str,
+    seconds: float,
+    *,
+    poll_seconds: float = 5.0,
+) -> bool:
+    """Keep cancellation responsive while a public source cools down."""
+    deadline = time.monotonic() + max(0.0, seconds)
+    next_heartbeat = time.monotonic()
+    while time.monotonic() < deadline:
+        if repository.cancellation_requested(run_id):
+            return False
+        now = time.monotonic()
+        if now >= next_heartbeat:
+            repository.update_run(run_id, {"heartbeat_at": _iso_now()})
+            next_heartbeat = now + 30
+        time.sleep(min(poll_seconds, max(0.0, deadline - time.monotonic())))
+    return True
 
 
 def _finalize_report(
@@ -126,6 +147,7 @@ def run(run_id: str) -> int:
             collected = []
             unprocessed = list(units)
             cancel_after_batch = False
+            cooldown_after_batch = 0.0
             batch_started = time.monotonic()
             while unprocessed:
                 workers = min(len(unprocessed), _parallelism(adapter))
@@ -134,7 +156,12 @@ def run(run_id: str) -> int:
                 wave_started = time.monotonic()
                 wave_results = _collect_wave(adapter, wave, date_from, date_to)
                 wave_elapsed = time.monotonic() - wave_started
-                collected.extend(wave_results)
+                rate_limited = [
+                    (unit, error) for unit, _, error in wave_results if isinstance(error, AdapterRateLimited)
+                ]
+                collected.extend(
+                    result for result in wave_results if not isinstance(result[2], AdapterRateLimited)
+                )
                 if adapter.name == "complot":
                     after = adapter.performance_snapshot()
                     rate_penalties = int(after["penalties"]) - int(before["penalties"])
@@ -143,6 +170,21 @@ def run(run_id: str) -> int:
                         elapsed_seconds=wave_elapsed,
                         units=len(wave),
                     )
+                if rate_limited:
+                    released = [unit.id for unit, _ in rate_limited] + [unit.id for unit in unprocessed]
+                    repository.release_units(released)
+                    cooldown_after_batch = max(error.retry_after_seconds for _, error in rate_limited)
+                    repository.log(
+                        run_id,
+                        "warning",
+                        "source_rate_limited",
+                        {
+                            "released_units": len(released),
+                            "retry_after_seconds": round(cooldown_after_batch, 1),
+                        },
+                    )
+                    unprocessed = []
+                    break
                 if unprocessed and repository.cancellation_requested(run_id):
                     repository.release_units([unit.id for unit in unprocessed])
                     cancel_after_batch = True
@@ -175,18 +217,31 @@ def run(run_id: str) -> int:
                     repository.complete_unit(unit.id, len(records or []))
                 except AdapterReviewRequired as error:
                     repository.fail_unit(unit.id, str(error), review=True)
-                    repository.log(run_id, "warning", "unit_requires_review", {"unit": unit.unit_key, "error": str(error)})
+                    repository.log(
+                        run_id,
+                        "warning",
+                        "unit_requires_review",
+                        {"unit": unit.unit_key, "error": str(error)},
+                    )
                 except Exception as error:  # A single street must not erase the rest of the run.
                     repository.fail_unit(unit.id, str(error))
-                    repository.log(run_id, "error", "unit_failed", {"unit": unit.unit_key, "error": str(error)[:1000]})
+                    repository.log(
+                        run_id, "error", "unit_failed", {"unit": unit.unit_key, "error": str(error)[:1000]}
+                    )
             counts = repository.progress_counts(run_id)
             repository.update_run(
                 run_id,
-                {**counts, "heartbeat_at": _iso_now(), "lock_expires_at": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()},
+                {
+                    **counts,
+                    "heartbeat_at": _iso_now(),
+                    "lock_expires_at": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
+                },
             )
-            performance = adapter.performance_snapshot() if adapter.name == "complot" else {
-                "parallelism": _parallelism(adapter)
-            }
+            performance = (
+                adapter.performance_snapshot()
+                if adapter.name == "complot"
+                else {"parallelism": _parallelism(adapter)}
+            )
             repository.log(
                 run_id,
                 "info",
@@ -202,6 +257,9 @@ def run(run_id: str) -> int:
 
             if cancel_after_batch or repository.cancellation_requested(run_id):
                 return _finalize_report(repository, run_id, city["id"], date_from, date_to, "cancelled")
+            if cooldown_after_batch:
+                if not _wait_for_source_cooldown(repository, run_id, cooldown_after_batch):
+                    return _finalize_report(repository, run_id, city["id"], date_from, date_to, "cancelled")
 
         if repository.cancellation_requested(run_id):
             return _finalize_report(repository, run_id, city["id"], date_from, date_to, "cancelled")
@@ -212,22 +270,35 @@ def run(run_id: str) -> int:
         if remaining:
             repository.update_run(
                 run_id,
-                {"status": "safely_stopped", "heartbeat_at": _iso_now(), "lock_expires_at": None, "lock_owner": None},
+                {
+                    "status": "safely_stopped",
+                    "heartbeat_at": _iso_now(),
+                    "lock_expires_at": None,
+                    "lock_owner": None,
+                },
             )
             repository.log(run_id, "info", "worker_timebox_reached", {"remaining_units": len(remaining)})
             return 75
 
         summary = repository.progress_summary(run_id)
         final_status = (
-            "requires_review" if summary["units_requires_review"]
-            else "completed_with_errors" if summary["units_failed"]
+            "requires_review"
+            if summary["units_requires_review"]
+            else "completed_with_errors"
+            if summary["units_failed"]
             else "completed"
         )
         return _finalize_report(repository, run_id, city["id"], date_from, date_to, final_status)
     except Exception as error:
         repository.update_run(
             run_id,
-            {"status": "failed", "error_message": str(error)[:2000], "completed_at": _iso_now(), "lock_owner": None, "lock_expires_at": None},
+            {
+                "status": "failed",
+                "error_message": str(error)[:2000],
+                "completed_at": _iso_now(),
+                "lock_owner": None,
+                "lock_expires_at": None,
+            },
         )
         repository.log(run_id, "error", "worker_failed", {"error": str(error)[:1000]})
         raise
