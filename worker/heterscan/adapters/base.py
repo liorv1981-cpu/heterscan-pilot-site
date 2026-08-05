@@ -15,6 +15,9 @@ class Adapter(ABC):
         self.city_name = city_name
         self.config = config
 
+    def close(self) -> None:
+        """Release adapter-owned resources. Stateless adapters need no cleanup."""
+
     @abstractmethod
     def collect(self, unit: SearchUnit, date_from: date, date_to: date) -> list[ApplicationRecord]:
         raise NotImplementedError

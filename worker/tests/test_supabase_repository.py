@@ -4,6 +4,7 @@ from datetime import date, datetime, timezone
 from typing import Any
 
 from heterscan.supabase import SupabaseRepository, _json_safe
+from heterscan.domain import ApplicationRecord
 
 
 class FakeResponse:
@@ -81,3 +82,66 @@ def test_cancellation_requested_reads_persistent_run_flag() -> None:
     repository._rest = fake_rest  # type: ignore[method-assign]
 
     assert repository.cancellation_requested("run-1") is True
+
+
+def test_save_applications_uses_four_bulk_requests_for_multiple_records() -> None:
+    repository = SupabaseRepository.__new__(SupabaseRepository)
+    calls: list[tuple[str, str, Any]] = []
+    records = [
+        ApplicationRecord(
+            city_id="7900",
+            application_number=str(number),
+            address=f"רחוב {number}",
+            source_url=f"https://example.test/{number}",
+            source_reference=str(number),
+            adapter_name="complot",
+            adapter_version="0.1.0",
+            raw_data={"number": number},
+            submission_date=date(2025, 7, number),
+            is_approved=True,
+            approval_date=date(2025, 7, number + 1),
+        )
+        for number in (1, 2)
+    ]
+
+    def fake_rest(method: str, path: str, **kwargs: Any) -> FakeResponse:
+        calls.append((method, path, kwargs.get("json")))
+        if path.startswith("applications?"):
+            return FakeResponse([
+                {
+                    "id": f"app-{index}",
+                    "city_id": row["city_id"],
+                    "identity_key": row["identity_key"],
+                    "content_hash": row["content_hash"],
+                }
+                for index, row in enumerate(kwargs["json"], start=1)
+            ])
+        return FakeResponse([])
+
+    repository._rest = fake_rest  # type: ignore[method-assign]
+
+    saved = repository.save_applications("run-1", records)
+
+    assert saved == ["app-1", "app-2"]
+    assert len(calls) == 4
+    assert all(call[0] == "POST" for call in calls)
+    assert [len(call[2]) for call in calls] == [2, 2, 2, 2]
+
+
+def test_release_units_returns_unprocessed_claims_to_pending() -> None:
+    repository = SupabaseRepository.__new__(SupabaseRepository)
+    calls: list[tuple[str, str, Any]] = []
+
+    def fake_rest(method: str, path: str, **kwargs: Any) -> FakeResponse:
+        calls.append((method, path, kwargs["json"]))
+        return FakeResponse([])
+
+    repository._rest = fake_rest  # type: ignore[method-assign]
+
+    repository.release_units(["unit-1", "unit-2"])
+
+    assert calls == [(
+        "PATCH",
+        "run_units?id=in.(unit-1,unit-2)&status=eq.processing",
+        {"status": "pending", "claimed_by": None, "claimed_at": None},
+    )]

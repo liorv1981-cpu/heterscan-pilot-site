@@ -25,9 +25,38 @@ def _parse_date(value: str) -> date:
 
 
 def _claim_limit(adapter_name: str) -> int:
-    # Non-Jerusalem adapters are sequential. Claiming only one unit keeps a
-    # user-requested stop responsive and avoids leaving a large claimed batch.
-    return 20 if adapter_name == "jerusalem" else 1
+    return 20 if adapter_name in ("jerusalem", "complot") else 1
+
+
+def _parallelism(adapter) -> int:
+    if adapter.name == "jerusalem":
+        return 8
+    if adapter.name == "complot":
+        return adapter.parallelism()
+    return 1
+
+
+def _collect_wave(adapter, units, date_from: date, date_to: date):
+    collected = []
+    workers = min(len(units), _parallelism(adapter))
+    if workers > 1:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_unit = {
+                executor.submit(adapter.collect, unit, date_from, date_to): unit for unit in units
+            }
+            for future in concurrent.futures.as_completed(future_to_unit):
+                unit = future_to_unit[future]
+                try:
+                    collected.append((unit, future.result(), None))
+                except Exception as error:
+                    collected.append((unit, None, error))
+    else:
+        unit = units[0]
+        try:
+            collected.append((unit, adapter.collect(unit, date_from, date_to), None))
+        except Exception as error:
+            collected.append((unit, None, error))
+    return collected
 
 
 def _finalize_report(
@@ -65,6 +94,7 @@ def _finalize_report(
 
 def run(run_id: str) -> int:
     repository = SupabaseRepository()
+    adapter = None
     worker_id = f"{socket.gethostname()}:{os.getpid()}"
     started = time.monotonic()
     max_seconds = int(os.environ.get("MAX_WORKER_SECONDS", "19800"))
@@ -94,30 +124,54 @@ def run(run_id: str) -> int:
             if not units:
                 break
             collected = []
-            if adapter.name == "jerusalem":
-                with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-                    future_to_unit = {
-                        executor.submit(adapter.collect, unit, date_from, date_to): unit for unit in units
-                    }
-                    for future in concurrent.futures.as_completed(future_to_unit):
-                        unit = future_to_unit[future]
-                        try:
-                            collected.append((unit, future.result(), None))
-                        except Exception as error:
-                            collected.append((unit, None, error))
-            else:
-                for unit in units:
+            unprocessed = list(units)
+            cancel_after_batch = False
+            batch_started = time.monotonic()
+            while unprocessed:
+                workers = min(len(unprocessed), _parallelism(adapter))
+                wave, unprocessed = unprocessed[:workers], unprocessed[workers:]
+                before = adapter.performance_snapshot() if adapter.name == "complot" else {}
+                wave_started = time.monotonic()
+                wave_results = _collect_wave(adapter, wave, date_from, date_to)
+                wave_elapsed = time.monotonic() - wave_started
+                collected.extend(wave_results)
+                if adapter.name == "complot":
+                    after = adapter.performance_snapshot()
+                    rate_penalties = int(after["penalties"]) - int(before["penalties"])
+                    adapter.observe_wave(
+                        errors=sum(1 for _, _, error in wave_results if error) + max(0, rate_penalties),
+                        elapsed_seconds=wave_elapsed,
+                        units=len(wave),
+                    )
+                if unprocessed and repository.cancellation_requested(run_id):
+                    repository.release_units([unit.id for unit in unprocessed])
+                    cancel_after_batch = True
+                    break
+
+            successful = [(unit, records or []) for unit, records, error in collected if error is None]
+            all_records = [record for _, records in successful for record in records]
+            persistence_errors: dict[str, Exception] = {}
+            try:
+                repository.save_applications(run_id, all_records)
+            except Exception as batch_error:
+                repository.log(
+                    run_id,
+                    "warning",
+                    "bulk_persistence_fallback",
+                    {"records": len(all_records), "error": str(batch_error)[:1000]},
+                )
+                for unit, records in successful:
                     try:
-                        collected.append((unit, adapter.collect(unit, date_from, date_to), None))
-                    except Exception as error:
-                        collected.append((unit, None, error))
+                        repository.save_applications(run_id, records)
+                    except Exception as unit_error:
+                        persistence_errors[unit.id] = unit_error
 
             for unit, records, collection_error in collected:
                 try:
                     if collection_error:
                         raise collection_error
-                    for record in records or []:
-                        repository.save_application(run_id, record)
+                    if unit.id in persistence_errors:
+                        raise persistence_errors[unit.id]
                     repository.complete_unit(unit.id, len(records or []))
                 except AdapterReviewRequired as error:
                     repository.fail_unit(unit.id, str(error), review=True)
@@ -130,8 +184,23 @@ def run(run_id: str) -> int:
                 run_id,
                 {**counts, "heartbeat_at": _iso_now(), "lock_expires_at": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()},
             )
+            performance = adapter.performance_snapshot() if adapter.name == "complot" else {
+                "parallelism": _parallelism(adapter)
+            }
+            repository.log(
+                run_id,
+                "info",
+                "worker_batch_completed",
+                {
+                    "claimed_units": len(units),
+                    "processed_units": len(collected),
+                    "records": len(all_records),
+                    "elapsed_seconds": round(time.monotonic() - batch_started, 3),
+                    **performance,
+                },
+            )
 
-            if repository.cancellation_requested(run_id):
+            if cancel_after_batch or repository.cancellation_requested(run_id):
                 return _finalize_report(repository, run_id, city["id"], date_from, date_to, "cancelled")
 
         if repository.cancellation_requested(run_id):
@@ -156,16 +225,15 @@ def run(run_id: str) -> int:
         )
         return _finalize_report(repository, run_id, city["id"], date_from, date_to, final_status)
     except Exception as error:
-        try:
-            repository.update_run(
-                run_id,
-                {"status": "failed", "error_message": str(error)[:2000], "completed_at": _iso_now(), "lock_owner": None, "lock_expires_at": None},
-            )
-            repository.log(run_id, "error", "worker_failed", {"error": str(error)[:1000]})
-        finally:
-            repository.close()
+        repository.update_run(
+            run_id,
+            {"status": "failed", "error_message": str(error)[:2000], "completed_at": _iso_now(), "lock_owner": None, "lock_expires_at": None},
+        )
+        repository.log(run_id, "error", "worker_failed", {"error": str(error)[:1000]})
         raise
     finally:
+        if adapter is not None:
+            adapter.close()
         repository.close()
 
 

@@ -96,46 +96,109 @@ class SupabaseRepository:
         )
 
     def save_application(self, run_id: str, record: ApplicationRecord) -> str:
-        fallback = {
-            "address": record.address,
-            "submission_date": str(record.submission_date or ""),
-            "application_type": record.application_type,
-            "building_file_number": record.building_file_number,
-        }
-        identity = record_identity(record.city_id, record.application_number, fallback)
-        database_record = _json_safe(
-            record.to_database(run_id=run_id, identity_key=identity, content_hash=content_hash(record.raw_data))
-        )
+        return self.save_applications(run_id, [record])[0]
+
+    def save_applications(
+        self,
+        run_id: str,
+        records: list[ApplicationRecord],
+        *,
+        batch_size: int = 100,
+    ) -> list[str]:
+        saved_ids: list[str] = []
+        for offset in range(0, len(records), batch_size):
+            saved_ids.extend(self._save_application_batch(run_id, records[offset:offset + batch_size]))
+        return saved_ids
+
+    def _save_application_batch(self, run_id: str, records: list[ApplicationRecord]) -> list[str]:
+        if not records:
+            return []
+        prepared: dict[tuple[str, str], tuple[ApplicationRecord, dict[str, Any]]] = {}
+        for record in records:
+            fallback = {
+                "address": record.address,
+                "submission_date": str(record.submission_date or ""),
+                "application_type": record.application_type,
+                "building_file_number": record.building_file_number,
+            }
+            identity = record_identity(record.city_id, record.application_number, fallback)
+            database_record = _json_safe(
+                record.to_database(
+                    run_id=run_id,
+                    identity_key=identity,
+                    content_hash=content_hash(record.raw_data),
+                )
+            )
+            prepared[(record.city_id, identity)] = (record, database_record)
+
         response = self._rest(
-            "POST", "applications?on_conflict=city_id,identity_key&select=id,content_hash",
-            headers={"Prefer": "resolution=merge-duplicates,return=representation"}, json=database_record,
+            "POST",
+            "applications?on_conflict=city_id,identity_key&select=id,city_id,identity_key,content_hash",
+            headers={"Prefer": "resolution=merge-duplicates,return=representation"},
+            json=[item[1] for item in prepared.values()],
         )
-        application = response.json()[0]
+        applications = response.json()
+        by_identity = {(row["city_id"], row["identity_key"]): row for row in applications}
+        if len(by_identity) != len(prepared):
+            raise RuntimeError("Bulk application upsert did not return every prepared record")
+
+        run_links = []
+        versions = []
+        events: dict[tuple[str, str], dict[str, Any]] = {}
+        saved_ids = []
+        for identity, (record, database_record) in prepared.items():
+            application = by_identity[identity]
+            application_id = application["id"]
+            saved_ids.append(application_id)
+            run_links.append({"run_id": run_id, "application_id": application_id})
+            versions.append({
+                "application_id": application_id,
+                "run_id": run_id,
+                "content_hash": application["content_hash"],
+                "snapshot": _json_safe(record.raw_data),
+            })
+            record_events = []
+            if record.is_approved:
+                record_events.append({"event_type": "approval", "event_date": str(record.approval_date or "") or None})
+            if record.is_permit_issued:
+                record_events.append({"event_type": "permit_issued", "event_date": str(record.permit_issue_date or "") or None})
+            for event in record_events:
+                events[(application_id, event["event_type"])] = {
+                    "application_id": application_id,
+                    "run_id": run_id,
+                    **event,
+                    "original_status": record.permit_status_original,
+                    "evidence": _json_safe(record.evidence),
+                }
+
         self._rest(
             "POST", "run_applications?on_conflict=run_id,application_id",
             headers={"Prefer": "resolution=ignore-duplicates"},
-            json={"run_id": run_id, "application_id": application["id"]},
+            json=run_links,
         )
         self._rest(
             "POST", "application_versions?on_conflict=application_id,content_hash",
             headers={"Prefer": "resolution=ignore-duplicates"},
-            json={"application_id": application["id"], "run_id": run_id, "content_hash": application["content_hash"], "snapshot": _json_safe(record.raw_data)},
+            json=versions,
         )
-        events = []
-        if record.is_approved:
-            events.append({"event_type": "approval", "event_date": str(record.approval_date or "") or None})
-        if record.is_permit_issued:
-            events.append({"event_type": "permit_issued", "event_date": str(record.permit_issue_date or "") or None})
-        for event in events:
+        if events:
             self._rest(
-                "POST", "application_events?on_conflict=application_id,run_id,event_type",
+                "POST",
+                "application_events?on_conflict=application_id,run_id,event_type",
                 headers={"Prefer": "resolution=ignore-duplicates"},
-                json={
-                    "application_id": application["id"], "run_id": run_id, **event,
-                    "original_status": record.permit_status_original, "evidence": _json_safe(record.evidence),
-                },
+                json=list(events.values()),
             )
-        return application["id"]
+        return saved_ids
+
+    def release_units(self, unit_ids: list[str]) -> None:
+        if not unit_ids:
+            return
+        encoded_ids = ",".join(quote(unit_id) for unit_id in unit_ids)
+        self._rest(
+            "PATCH",
+            f"run_units?id=in.({encoded_ids})&status=eq.processing",
+            json={"status": "pending", "claimed_by": None, "claimed_at": None},
+        )
 
     def progress_summary(self, run_id: str) -> dict[str, int]:
         rows = self._rest("POST", "rpc/get_run_progress", json={"p_run_id": run_id}).json()
