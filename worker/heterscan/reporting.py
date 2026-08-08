@@ -12,6 +12,14 @@ HEADER_FILL = PatternFill("solid", fgColor="123B70")
 HEADER_FONT = Font(color="FFFFFF", bold=True)
 
 
+def _display_status(row: dict[str, Any]) -> str:
+    if row.get("is_permit_issued"):
+        return row.get("permit_status_original") or "היתר הופק"
+    if row.get("is_approved"):
+        return "אושר — טרם הופק היתר"
+    return "טרם אושר"
+
+
 def _display(value: Any) -> Any:
     if value is None or value == "":
         return "לא ידוע"
@@ -20,7 +28,9 @@ def _display(value: Any) -> Any:
     return value
 
 
-def _sheet(workbook: Workbook, title: str, rows: list[dict[str, Any]], headers: list[tuple[str, str]]) -> None:
+def _sheet(
+    workbook: Workbook, title: str, rows: list[dict[str, Any]], headers: list[tuple[str, str]]
+) -> None:
     sheet = workbook.create_sheet(title)
     sheet.sheet_view.rightToLeft = True
     sheet.append([label for _, label in headers])
@@ -43,42 +53,89 @@ def _sheet(workbook: Workbook, title: str, rows: list[dict[str, Any]], headers: 
     sheet.auto_filter.ref = sheet.dimensions
 
 
-def build_report(run: dict[str, Any], results: list[dict[str, Any]], units: list[dict[str, Any]]) -> tuple[bytes, str]:
+def build_report(
+    run: dict[str, Any], results: list[dict[str, Any]], units: list[dict[str, Any]]
+) -> tuple[bytes, str]:
     workbook = Workbook()
     workbook.remove(workbook.active)
-    summary = [{
-        "city_name": run["city_name"], "date_from": run["date_from"], "date_to": run["date_to"],
-        "status": run["status"], "applications_found": len(results),
-        "permits_found": sum(bool(row.get("is_permit_issued")) for row in results),
-        "units_total": len(units), "units_completed": sum(row["status"] == "completed" for row in units),
-    }]
-    _sheet(workbook, "סיכום", summary, [
-        ("city_name", "עיר"), ("date_from", "מתאריך"), ("date_to", "עד תאריך"), ("status", "סטטוס"),
-        ("applications_found", "בקשות שנמצאו"), ("permits_found", "היתרים שנמצאו"),
-        ("units_total", "יחידות חיפוש"), ("units_completed", "יחידות שהושלמו"),
-    ])
-    common_headers = [
-        ("address", "כתובת"), ("application_number", "מספר בקשה"), ("building_file_number", "מספר תיק בניין"),
-        ("block_number", "גוש"), ("parcel_number", "חלקה"), ("application_type", "סוג בקשה"),
-        ("work_description", "תיאור עבודה"), ("submission_date", "תאריך הגשה"),
-        ("approval_date", "תאריך אישור"), ("permit_number", "מספר היתר"),
-        ("permit_issue_date", "תאריך הפקת היתר"), ("permit_status_original", "סטטוס מקורי"),
-        ("permit_confidence", "רמת אמינות"), ("source_url", "קישור מקור"),
+    summary = [
+        {
+            "city_name": run["city_name"],
+            "date_from": run["date_from"],
+            "date_to": run["date_to"],
+            "status": run["status"],
+            "applications_found": len(results),
+            "permits_found": sum(bool(row.get("is_permit_issued")) for row in results),
+            "units_total": len(units),
+            "units_completed": sum(row["status"] == "completed" for row in units),
+        }
     ]
-    permits = [row for row in results if row.get("is_permit_issued")]
-    approvals = [row for row in results if row.get("is_approved")]
+    _sheet(
+        workbook,
+        "סיכום",
+        summary,
+        [
+            ("city_name", "עיר"),
+            ("date_from", "מתאריך"),
+            ("date_to", "עד תאריך"),
+            ("status", "סטטוס"),
+            ("applications_found", "בקשות שנמצאו"),
+            ("permits_found", "היתרים שנמצאו"),
+            ("units_total", "יחידות חיפוש"),
+            ("units_completed", "יחידות שהושלמו"),
+        ],
+    )
+    report_results = [{**row, "display_status": _display_status(row)} for row in results]
+    common_headers = [
+        ("address", "כתובת"),
+        ("application_number", "מספר בקשה"),
+        ("building_file_number", "מספר תיק בניין"),
+        ("block_number", "גוש"),
+        ("parcel_number", "חלקה"),
+        ("application_type", "סוג בקשה"),
+        ("work_description", "תיאור עבודה"),
+        ("submission_date", "תאריך הגשה"),
+        ("approval_date", "תאריך אישור"),
+        ("permit_number", "מספר היתר"),
+        ("permit_issue_date", "תאריך הפקת היתר"),
+        ("display_status", "סטטוס"),
+        ("permit_status_original", "סטטוס מקורי במקור"),
+        ("permit_confidence", "רמת אמינות"),
+        ("source_url", "קישור מקור"),
+    ]
+    permits = [row for row in report_results if row.get("is_permit_issued")]
+    approvals = [row for row in report_results if row.get("is_approved")]
+    _sheet(workbook, "בקשות והיתרים", report_results, common_headers)
     _sheet(workbook, "היתרים שנמצאו", permits, common_headers)
     _sheet(workbook, "בקשות שאושרו", approvals, common_headers)
-    _sheet(workbook, "כל התוצאות", results, common_headers)
-    _sheet(workbook, "יחידות חיפוש", units, [
-        ("sequence", "מספר"), ("unit_key", "יחידה"), ("status", "סטטוס"), ("attempts", "ניסיונות"),
-        ("result_count", "תוצאות"), ("completed_at", "זמן סיום"), ("error_message", "שגיאה"),
-    ])
+    _sheet(workbook, "כל התוצאות", report_results, common_headers)
+    _sheet(
+        workbook,
+        "יחידות חיפוש",
+        units,
+        [
+            ("sequence", "מספר"),
+            ("unit_key", "יחידה"),
+            ("status", "סטטוס"),
+            ("attempts", "ניסיונות"),
+            ("result_count", "תוצאות"),
+            ("completed_at", "זמן סיום"),
+            ("error_message", "שגיאה"),
+        ],
+    )
     errors = [row for row in units if row["status"] in ("failed", "requires_review")]
-    _sheet(workbook, "שגיאות", errors, [
-        ("sequence", "מספר"), ("unit_key", "יחידה"), ("status", "סטטוס"),
-        ("attempts", "ניסיונות"), ("error_message", "פירוט"),
-    ])
+    _sheet(
+        workbook,
+        "שגיאות",
+        errors,
+        [
+            ("sequence", "מספר"),
+            ("unit_key", "יחידה"),
+            ("status", "סטטוס"),
+            ("attempts", "ניסיונות"),
+            ("error_message", "פירוט"),
+        ],
+    )
     stream = BytesIO()
     workbook.save(stream)
     payload = stream.getvalue()
