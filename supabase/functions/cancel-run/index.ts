@@ -2,7 +2,6 @@ import { corsHeaders, errorResponse, json } from '../_shared/http.ts'
 import { requireAdmin, serviceClient } from '../_shared/clients.ts'
 
 const activeStatuses = ['created', 'dispatching', 'running', 'safely_stopped']
-const immediatelyCancellableStatuses = ['created', 'dispatching', 'safely_stopped']
 
 Deno.serve(async (request) => {
   if (request.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
@@ -24,31 +23,21 @@ Deno.serve(async (request) => {
       throw new Error('לא ניתן לעצור הרצה שכבר הסתיימה.')
     }
 
-    if (immediatelyCancellableStatuses.includes(existing.status)) {
-      const now = new Date().toISOString()
-      const { error: updateError } = await db
-        .from('runs')
-        .update({
-          status: 'cancelled',
-          cancel_requested_at: existing.cancel_requested_at ?? now,
-          completed_at: now,
-          heartbeat_at: now,
-          lock_owner: null,
-          lock_expires_at: null,
-        })
-        .eq('id', runId)
-        .eq('requested_by', user.id)
-        .in('status', immediatelyCancellableStatuses)
-      if (updateError) throw updateError
-    } else if (!existing.cancel_requested_at) {
-      const { error: updateError } = await db
-        .from('runs')
-        .update({ cancel_requested_at: new Date().toISOString() })
-        .eq('id', runId)
-        .eq('requested_by', user.id)
-        .eq('status', 'running')
-      if (updateError) throw updateError
-    }
+    const now = new Date().toISOString()
+    const { error: updateError } = await db
+      .from('runs')
+      .update({
+        status: 'cancelled',
+        cancel_requested_at: existing.cancel_requested_at ?? now,
+        completed_at: now,
+        heartbeat_at: now,
+        lock_owner: null,
+        lock_expires_at: null,
+      })
+      .eq('id', runId)
+      .eq('requested_by', user.id)
+      .in('status', activeStatuses)
+    if (updateError) throw updateError
 
     const { data: run, error: readError } = await db
       .from('run_overview')
