@@ -1,4 +1,5 @@
 name: HETERSCAN manual worker
+run-name: HETERSCAN ${{ inputs.run_id }}
 
 on:
   workflow_dispatch:
@@ -14,7 +15,7 @@ on:
         type: string
 
 concurrency:
-  group: heter-scan-pilot-worker
+  group: heter-scan-pilot-worker-${{ inputs.runner_label }}
   cancel-in-progress: false
 
 permissions:
