@@ -55,6 +55,15 @@ jobs:
                       "rows": len(rows),
                       "elapsed_seconds": round(time.monotonic() - started, 2),
                   }
+              except Exception as error:
+                  return {
+                      "source": "complot",
+                      "city": city_name,
+                      "status": "error",
+                      "error_type": type(error).__name__,
+                      "error": str(error),
+                      "elapsed_seconds": round(time.monotonic() - started, 2),
+                  }
               finally:
                   adapter.close()
 
@@ -82,6 +91,15 @@ jobs:
                       "city": "ירושלים",
                       "status": 200,
                       "rows": len(rows),
+                      "elapsed_seconds": round(time.monotonic() - started, 2),
+                  }
+              except Exception as error:
+                  return {
+                      "source": "jerusalem",
+                      "city": "ירושלים",
+                      "status": "error",
+                      "error_type": type(error).__name__,
+                      "error": str(error),
                       "elapsed_seconds": round(time.monotonic() - started, 2),
                   }
               finally:
