@@ -8,6 +8,10 @@ on:
         description: Supabase run UUID
         required: true
         type: string
+      runner_label:
+        description: Deprecated compatibility input; all scans run locally
+        required: false
+        type: string
 
 concurrency:
   group: heter-scan-pilot-worker-local
