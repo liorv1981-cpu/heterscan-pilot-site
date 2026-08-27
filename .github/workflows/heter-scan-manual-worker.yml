@@ -25,6 +25,10 @@ jobs:
   scan:
     runs-on: jerusalem-local
     timeout-minutes: 350
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
     steps:
       - uses: actions/checkout@v4
       - name: Install worker on local runner
