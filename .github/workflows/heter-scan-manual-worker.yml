@@ -8,14 +8,9 @@ on:
         description: Supabase run UUID
         required: true
         type: string
-      runner_label:
-        description: Runner label selected by the trusted backend
-        required: false
-        default: ubuntu-latest
-        type: string
 
 concurrency:
-  group: heter-scan-pilot-worker-${{ inputs.runner_label }}
+  group: heter-scan-pilot-worker-local
   cancel-in-progress: false
 
 permissions:
@@ -24,41 +19,15 @@ permissions:
 
 jobs:
   scan:
-    runs-on: ${{ inputs.runner_label }}
+    runs-on: jerusalem-local
     timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        if: inputs.runner_label != 'jerusalem-local'
-        with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: worker/pyproject.toml
-      - name: Install worker on hosted runner
-        if: inputs.runner_label != 'jerusalem-local'
-        run: python -m pip install ./worker
-      - name: Install worker on Jerusalem runner
-        if: inputs.runner_label == 'jerusalem-local'
+      - name: Install worker on local runner
         shell: powershell
         run: |
           & 'C:\HETERSCAN\Python312\python.exe' -m pip install ./worker
-      - name: Process run on hosted runner
-        if: inputs.runner_label != 'jerusalem-local'
-        id: worker_hosted
-        shell: bash
-        env:
-          RUN_ID: ${{ inputs.run_id }}
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          MAX_WORKER_SECONDS: "19800"
-        run: |
-          set +e
-          python -m heterscan.runner --run-id "$RUN_ID"
-          code=$?
-          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
-          if [ "$code" -ne 0 ] && [ "$code" -ne 75 ]; then exit "$code"; fi
-      - name: Process run on Jerusalem runner
-        if: inputs.runner_label == 'jerusalem-local'
+      - name: Process run on local runner
         id: worker_local
         shell: powershell
         env:
@@ -72,7 +41,7 @@ jobs:
           "exit_code=$code" >> $env:GITHUB_OUTPUT
           if ($code -ne 0 -and $code -ne 75) { exit $code }
       - name: Continue same run after safe checkpoint
-        if: steps.worker_hosted.outputs.exit_code == '75' || steps.worker_local.outputs.exit_code == '75'
+        if: steps.worker_local.outputs.exit_code == '75'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run heter-scan-manual-worker.yml --ref "${{ github.ref_name }}" -f run_id="${{ inputs.run_id }}" -f runner_label="${{ inputs.runner_label }}"
+        run: gh workflow run heter-scan-manual-worker.yml --ref "${{ github.ref_name }}" -f run_id="${{ inputs.run_id }}"

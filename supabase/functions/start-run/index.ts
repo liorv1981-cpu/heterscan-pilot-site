@@ -9,6 +9,8 @@ interface GitHubRunner {
   labels: Array<{ name: string }>
 }
 
+// Despite the legacy label name, this is the single trusted Windows runner for
+// every pilot city. Municipal sources reject GitHub-hosted egress IPs.
 const localRunnerLabel = 'jerusalem-local'
 
 async function expireAbandonedDispatches(db: ReturnType<typeof serviceClient>) {
@@ -31,8 +33,6 @@ async function expireAbandonedDispatches(db: ReturnType<typeof serviceClient>) {
 }
 
 async function requireOnlineRunner(repository: string, token: string, runnerLabel: string) {
-  if (runnerLabel !== localRunnerLabel) return
-
   const response = await fetch(`https://api.github.com/repos/${repository}/actions/runners?per_page=100`, {
     headers: {
       Authorization: `Bearer ${token}`,
@@ -77,7 +77,7 @@ Deno.serve(async (request) => {
     const { data: token, error: tokenError } = await db.rpc('read_app_secret', { p_name: 'github_pat' })
     const workflow = Deno.env.get('GITHUB_WORKFLOW_FILE') ?? 'heter-scan-manual-worker.yml'
     if (tokenError || !token) throw new Error('GitHub Actions טרם הוגדר בסביבת הפיילוט.')
-    const runnerLabel = city.adapter_name === 'tel_aviv' ? 'ubuntu-latest' : localRunnerLabel
+    const runnerLabel = localRunnerLabel
     await requireOnlineRunner(repository, token, runnerLabel)
 
     const snapshot = { city, dateFrom: body.dateFrom, dateTo: body.dateTo, createdAt: new Date().toISOString() }
@@ -149,9 +149,6 @@ Deno.serve(async (request) => {
         ref: 'main',
         inputs: {
           run_id: run.id,
-          // Complot consistently times out from GitHub-hosted IP ranges, while
-          // the trusted local runner reaches the same public source reliably.
-          runner_label: runnerLabel,
         },
       }),
     })
