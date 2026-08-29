@@ -1,6 +1,7 @@
 import threading
 import time
 from datetime import date
+from types import SimpleNamespace
 
 from heterscan.domain import SearchUnit
 from heterscan.runner import _claim_limit, _collect_wave, _wait_for_source_cooldown
@@ -16,6 +17,29 @@ def test_city_wide_adapter_claims_one_unit() -> None:
 
 def test_jerusalem_keeps_its_parallel_batch() -> None:
     assert _claim_limit("jerusalem") == 20
+
+
+def test_collection_drops_records_outside_the_requested_range() -> None:
+    class FakeAdapter:
+        name = "tel_aviv"
+
+        def collect(self, _unit, _date_from, _date_to):
+            return [
+                SimpleNamespace(submission_date=date(2025, 6, 30)),
+                SimpleNamespace(submission_date=date(2025, 7, 1)),
+                SimpleNamespace(submission_date=date(2025, 7, 31)),
+                SimpleNamespace(submission_date=date(2025, 8, 1)),
+                SimpleNamespace(submission_date=None),
+            ]
+
+    unit = SearchUnit("1", "run-1", 1, "city-wide", {})
+    [(returned_unit, records, error)] = _collect_wave(
+        FakeAdapter(), [unit], date(2025, 7, 1), date(2025, 7, 31)
+    )
+
+    assert returned_unit is unit
+    assert error is None
+    assert [record.submission_date for record in records] == [date(2025, 7, 1), date(2025, 7, 31)]
 
 
 def test_complot_collection_respects_adaptive_parallelism() -> None:
@@ -37,7 +61,7 @@ def test_complot_collection_respects_adaptive_parallelism() -> None:
             time.sleep(0.02)
             with self.lock:
                 self.active -= 1
-            return [unit.unit_key]
+            return [SimpleNamespace(submission_date=date(2025, 7, 15), value=unit.unit_key)]
 
     adapter = FakeAdapter()
     units = [SearchUnit(str(index), "run-1", index, f"street:{index}", {}) for index in range(4)]

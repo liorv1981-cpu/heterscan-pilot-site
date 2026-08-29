@@ -36,6 +36,15 @@ def _parallelism(adapter) -> int:
     return 1
 
 
+def _records_in_requested_range(records, date_from: date, date_to: date):
+    """Final guard against adapters returning stale or out-of-range applications."""
+    return [
+        record
+        for record in records
+        if record.submission_date is not None and date_from <= record.submission_date <= date_to
+    ]
+
+
 def _collect_wave(adapter, units, date_from: date, date_to: date):
     collected = []
     workers = min(len(units), _parallelism(adapter))
@@ -47,13 +56,14 @@ def _collect_wave(adapter, units, date_from: date, date_to: date):
             for future in concurrent.futures.as_completed(future_to_unit):
                 unit = future_to_unit[future]
                 try:
-                    collected.append((unit, future.result(), None))
+                    collected.append((unit, _records_in_requested_range(future.result(), date_from, date_to), None))
                 except Exception as error:
                     collected.append((unit, None, error))
     else:
         unit = units[0]
         try:
-            collected.append((unit, adapter.collect(unit, date_from, date_to), None))
+            records = adapter.collect(unit, date_from, date_to)
+            collected.append((unit, _records_in_requested_range(records, date_from, date_to), None))
         except Exception as error:
             collected.append((unit, None, error))
     return collected
