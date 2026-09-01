@@ -9,7 +9,7 @@ import time
 from datetime import date, datetime, timedelta, timezone
 
 from .adapters import ComplotAdapter, JerusalemAdapter, TelAvivAdapter
-from .domain import AdapterRateLimited, AdapterReviewRequired
+from .domain import AdapterRateLimited, AdapterReviewRequired, DiscoveryResult
 from .reporting import build_report
 from .supabase import SupabaseRepository
 
@@ -38,6 +38,8 @@ def _parallelism(adapter) -> int:
 
 def _records_in_requested_range(records, date_from: date, date_to: date):
     """Final guard against adapters returning stale or out-of-range applications."""
+    if isinstance(records, DiscoveryResult):
+        return records
     return [
         record
         for record in records
@@ -56,7 +58,9 @@ def _collect_wave(adapter, units, date_from: date, date_to: date):
             for future in concurrent.futures.as_completed(future_to_unit):
                 unit = future_to_unit[future]
                 try:
-                    collected.append((unit, _records_in_requested_range(future.result(), date_from, date_to), None))
+                    collected.append(
+                        (unit, _records_in_requested_range(future.result(), date_from, date_to), None)
+                    )
                 except Exception as error:
                     collected.append((unit, None, error))
     else:
@@ -200,6 +204,19 @@ def run(run_id: str) -> int:
                     cancel_after_batch = True
                     break
 
+            discovered_units = 0
+            expanded = []
+            for unit, result, collection_error in collected:
+                if collection_error is None and isinstance(result, DiscoveryResult):
+                    try:
+                        discovered_units += repository.enqueue_units(run_id, result.units)
+                        expanded.append((unit, [], None))
+                    except Exception as expansion_error:
+                        expanded.append((unit, None, expansion_error))
+                else:
+                    expanded.append((unit, result, collection_error))
+            collected = expanded
+
             successful = [(unit, records or []) for unit, records, error in collected if error is None]
             all_records = [record for _, records in successful for record in records]
             persistence_errors: dict[str, Exception] = {}
@@ -218,26 +235,59 @@ def run(run_id: str) -> int:
                     except Exception as unit_error:
                         persistence_errors[unit.id] = unit_error
 
+            unit_updates = []
+            failure_context = []
             for unit, records, collection_error in collected:
-                try:
-                    if collection_error:
-                        raise collection_error
-                    if unit.id in persistence_errors:
-                        raise persistence_errors[unit.id]
-                    repository.complete_unit(unit.id, len(records or []))
-                except AdapterReviewRequired as error:
-                    repository.fail_unit(unit.id, str(error), review=True)
-                    repository.log(
-                        run_id,
-                        "warning",
-                        "unit_requires_review",
-                        {"unit": unit.unit_key, "error": str(error)},
+                error = collection_error or persistence_errors.get(unit.id)
+                if error is None:
+                    unit_updates.append(
+                        {
+                            "id": unit.id,
+                            "status": "completed",
+                            "result_count": len(records or []),
+                            "error_message": None,
+                        }
                     )
-                except Exception as error:  # A single street must not erase the rest of the run.
-                    repository.fail_unit(unit.id, str(error))
-                    repository.log(
-                        run_id, "error", "unit_failed", {"unit": unit.unit_key, "error": str(error)[:1000]}
+                    continue
+                review = isinstance(error, AdapterReviewRequired)
+                unit_updates.append(
+                    {
+                        "id": unit.id,
+                        "status": "requires_review" if review else "failed",
+                        "result_count": 0,
+                        "error_message": str(error)[:2000],
+                    }
+                )
+                failure_context.append({"unit": unit.unit_key, "review": review, "error": str(error)[:1000]})
+            try:
+                finished = repository.finish_units(unit_updates)
+                if finished != len(unit_updates):
+                    raise RuntimeError(
+                        f"Bulk unit completion updated {finished} of {len(unit_updates)} units"
                     )
+            except Exception as batch_finish_error:
+                repository.log(
+                    run_id,
+                    "warning",
+                    "bulk_unit_completion_fallback",
+                    {"units": len(unit_updates), "error": str(batch_finish_error)[:1000]},
+                )
+                for update in unit_updates:
+                    if update["status"] == "completed":
+                        repository.complete_unit(update["id"], update["result_count"])
+                    else:
+                        repository.fail_unit(
+                            update["id"],
+                            update["error_message"] or "Unit failed",
+                            review=update["status"] == "requires_review",
+                        )
+            if failure_context:
+                repository.log(
+                    run_id,
+                    "warning" if all(item["review"] for item in failure_context) else "error",
+                    "unit_batch_failures",
+                    {"failures": failure_context},
+                )
             counts = repository.progress_counts(run_id)
             repository.update_run(
                 run_id,
@@ -259,6 +309,7 @@ def run(run_id: str) -> int:
                 {
                     "claimed_units": len(units),
                     "processed_units": len(collected),
+                    "discovered_units": discovered_units,
                     "records": len(all_records),
                     "elapsed_seconds": round(time.monotonic() - batch_started, 3),
                     **performance,

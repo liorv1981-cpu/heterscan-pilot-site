@@ -3,7 +3,7 @@ import time
 from datetime import date
 from types import SimpleNamespace
 
-from heterscan.domain import SearchUnit
+from heterscan.domain import DiscoveredUnit, DiscoveryResult, SearchUnit
 from heterscan.runner import _claim_limit, _collect_wave, _wait_for_source_cooldown
 
 
@@ -40,6 +40,28 @@ def test_collection_drops_records_outside_the_requested_range() -> None:
     assert returned_unit is unit
     assert error is None
     assert [record.submission_date for record in records] == [date(2025, 7, 1), date(2025, 7, 31)]
+
+
+def test_collection_preserves_discovered_work_units() -> None:
+    discovered = DiscoveryResult(units=[DiscoveredUnit("request:20260001", {"mode": "request"})])
+
+    class FakeAdapter:
+        name = "complot"
+
+        def parallelism(self):
+            return 1
+
+        def collect(self, _unit, _date_from, _date_to):
+            return discovered
+
+    unit = SearchUnit("1", "run-1", 1, "discover-prefix:2026", {})
+    [(returned_unit, result, error)] = _collect_wave(
+        FakeAdapter(), [unit], date(2026, 1, 1), date(2026, 12, 31)
+    )
+
+    assert returned_unit is unit
+    assert result is discovered
+    assert error is None
 
 
 def test_complot_collection_respects_adaptive_parallelism() -> None:

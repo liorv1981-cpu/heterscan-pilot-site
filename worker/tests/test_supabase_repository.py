@@ -4,7 +4,7 @@ from datetime import date, datetime, timezone
 from typing import Any
 
 from heterscan.supabase import SupabaseRepository, _json_safe
-from heterscan.domain import ApplicationRecord
+from heterscan.domain import ApplicationRecord, DiscoveredUnit
 
 
 class FakeResponse:
@@ -54,13 +54,17 @@ def test_progress_summary_uses_database_aggregate() -> None:
         assert method == "POST"
         assert path == "rpc/get_run_progress"
         assert kwargs["json"] == {"p_run_id": "run-1"}
-        return FakeResponse([{
-            "units_completed": 4383,
-            "applications_found": 12,
-            "permits_found": 4,
-            "units_failed": 0,
-            "units_requires_review": 0,
-        }])
+        return FakeResponse(
+            [
+                {
+                    "units_completed": 4383,
+                    "applications_found": 12,
+                    "permits_found": 4,
+                    "units_failed": 0,
+                    "units_requires_review": 0,
+                }
+            ]
+        )
 
     repository._rest = fake_rest  # type: ignore[method-assign]
 
@@ -107,15 +111,17 @@ def test_save_applications_uses_four_bulk_requests_for_multiple_records() -> Non
     def fake_rest(method: str, path: str, **kwargs: Any) -> FakeResponse:
         calls.append((method, path, kwargs.get("json")))
         if path.startswith("applications?"):
-            return FakeResponse([
-                {
-                    "id": f"app-{index}",
-                    "city_id": row["city_id"],
-                    "identity_key": row["identity_key"],
-                    "content_hash": row["content_hash"],
-                }
-                for index, row in enumerate(kwargs["json"], start=1)
-            ])
+            return FakeResponse(
+                [
+                    {
+                        "id": f"app-{index}",
+                        "city_id": row["city_id"],
+                        "identity_key": row["identity_key"],
+                        "content_hash": row["content_hash"],
+                    }
+                    for index, row in enumerate(kwargs["json"], start=1)
+                ]
+            )
         return FakeResponse([])
 
     repository._rest = fake_rest  # type: ignore[method-assign]
@@ -140,8 +146,64 @@ def test_release_units_returns_unprocessed_claims_to_pending() -> None:
 
     repository.release_units(["unit-1", "unit-2"])
 
-    assert calls == [(
-        "PATCH",
-        "run_units?id=in.(unit-1,unit-2)&status=eq.processing",
-        {"status": "pending", "claimed_by": None, "claimed_at": None},
-    )]
+    assert calls == [
+        (
+            "PATCH",
+            "run_units?id=in.(unit-1,unit-2)&status=eq.processing",
+            {"status": "pending", "claimed_by": None, "claimed_at": None},
+        )
+    ]
+
+
+def test_enqueue_units_uses_one_rpc_call() -> None:
+    repository = SupabaseRepository.__new__(SupabaseRepository)
+    calls: list[tuple[str, str, Any]] = []
+
+    def fake_rest(method: str, path: str, **kwargs: Any) -> FakeResponse:
+        calls.append((method, path, kwargs["json"]))
+        return FakeResponse(2)
+
+    repository._rest = fake_rest  # type: ignore[method-assign]
+    inserted = repository.enqueue_units(
+        "run-1",
+        [
+            DiscoveredUnit("request:1", {"mode": "request", "seen": date(2025, 7, 1)}),
+            DiscoveredUnit("request:2", {"mode": "request"}),
+        ],
+    )
+
+    assert inserted == 2
+    assert calls == [
+        (
+            "POST",
+            "rpc/enqueue_run_units",
+            {
+                "p_run_id": "run-1",
+                "p_units": [
+                    {
+                        "unit_key": "request:1",
+                        "unit_payload": {"mode": "request", "seen": "2025-07-01"},
+                    },
+                    {"unit_key": "request:2", "unit_payload": {"mode": "request"}},
+                ],
+            },
+        )
+    ]
+
+
+def test_finish_units_batches_mixed_outcomes_in_one_rpc_call() -> None:
+    repository = SupabaseRepository.__new__(SupabaseRepository)
+    calls: list[tuple[str, str, Any]] = []
+    updates = [
+        {"id": "unit-1", "status": "completed", "result_count": 3},
+        {"id": "unit-2", "status": "failed", "error_message": "source error"},
+    ]
+
+    def fake_rest(method: str, path: str, **kwargs: Any) -> FakeResponse:
+        calls.append((method, path, kwargs["json"]))
+        return FakeResponse(2)
+
+    repository._rest = fake_rest  # type: ignore[method-assign]
+
+    assert repository.finish_units(updates) == 2
+    assert calls == [("POST", "rpc/finish_run_units", {"p_updates": updates})]

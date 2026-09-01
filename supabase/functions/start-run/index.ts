@@ -3,6 +3,15 @@ import { requireAdmin, serviceClient } from '../_shared/clients.ts'
 
 interface StartRunBody { cityId: string; dateFrom: string; dateTo: string }
 interface JerusalemStreet { municipal_code: string; municipal_name: string }
+interface ExistingApplication {
+  application_number: string
+  street_name: string | null
+  address: string | null
+  building_file_number: string | null
+  block_number: string | null
+  parcel_number: string | null
+  submission_date: string
+}
 interface GitHubRunner {
   status: string
   busy: boolean
@@ -80,7 +89,11 @@ Deno.serve(async (request) => {
     const runnerLabel = localRunnerLabel
     await requireOnlineRunner(repository, token, runnerLabel)
 
-    const snapshot = { city, dateFrom: body.dateFrom, dateTo: body.dateTo, createdAt: new Date().toISOString() }
+    const scanStrategy = city.adapter_name === 'complot' ? 'application-number' : 'source-default'
+    const snapshot = {
+      city, dateFrom: body.dateFrom, dateTo: body.dateTo,
+      scanStrategy, createdAt: new Date().toISOString(),
+    }
     const { data: run, error: runError } = await db.from('runs').insert({
       city_id: city.id, requested_by: user.id, date_from: body.dateFrom, date_to: body.dateTo,
       configuration_snapshot: snapshot,
@@ -93,6 +106,7 @@ Deno.serve(async (request) => {
 
     const streets: Array<{ id: string; street_code: string; official_name: string }> = []
     let jerusalemStreets: JerusalemStreet[] = []
+    const existingApplications: ExistingApplication[] = []
     if (city.adapter_name === 'jerusalem') {
       const pageSize = 1000
       for (let offset = 0; ; offset += pageSize) {
@@ -103,6 +117,21 @@ Deno.serve(async (request) => {
           .range(offset, offset + pageSize - 1)
         if (streetsError) throw streetsError
         jerusalemStreets.push(...((page ?? []) as JerusalemStreet[]))
+        if ((page?.length ?? 0) < pageSize) break
+      }
+    } else if (city.adapter_name === 'complot') {
+      const pageSize = 1000
+      for (let offset = 0; ; offset += pageSize) {
+        const { data: page, error: applicationsError } = await db.from('applications')
+          .select('application_number,street_name,address,building_file_number,block_number,parcel_number,submission_date')
+          .eq('city_id', city.id)
+          .gte('submission_date', body.dateFrom)
+          .lte('submission_date', body.dateTo)
+          .not('application_number', 'is', null)
+          .order('application_number')
+          .range(offset, offset + pageSize - 1)
+        if (applicationsError) throw applicationsError
+        existingApplications.push(...((page ?? []) as ExistingApplication[]))
         if ((page?.length ?? 0) < pageSize) break
       }
     } else if (city.adapter_name !== 'tel_aviv') {
@@ -118,6 +147,12 @@ Deno.serve(async (request) => {
         if ((page?.length ?? 0) < pageSize) break
       }
     }
+    const uniqueExistingApplications = [...new Map(
+      existingApplications.map((application) => [application.application_number, application]),
+    ).values()]
+    const firstYear = Number(body.dateFrom.slice(0, 4))
+    const lastYear = Number(body.dateTo.slice(0, 4))
+    const scanYears = Array.from({ length: lastYear - firstYear + 1 }, (_, index) => firstYear + index)
     const units = city.adapter_name === 'tel_aviv'
       ? [{ run_id: run.id, sequence: 1, unit_key: 'city-wide', unit_payload: { mode: 'city-wide' } }]
       : city.adapter_name === 'jerusalem'
@@ -126,6 +161,25 @@ Deno.serve(async (request) => {
           unit_key: `municipal-street:${street.municipal_code}`,
           unit_payload: { streetCode: street.municipal_code, streetName: street.municipal_name },
         }))
+      : city.adapter_name === 'complot'
+      ? [
+          ...uniqueExistingApplications.map((application, index) => ({
+            run_id: run.id, sequence: index + 1,
+            unit_key: `request:${application.application_number}`,
+            unit_payload: {
+              mode: 'request', requestNumber: application.application_number,
+              streetName: application.street_name, address: application.address,
+              buildingFile: application.building_file_number,
+              block: application.block_number, parcel: application.parcel_number,
+              submissionDate: application.submission_date,
+            },
+          })),
+          ...scanYears.map((year, index) => ({
+            run_id: run.id, sequence: uniqueExistingApplications.length + index + 1,
+            unit_key: `discover-prefix:${year}`,
+            unit_payload: { mode: 'discover-prefix', prefix: String(year), year: String(year) },
+          })),
+        ]
       : (streets ?? []).map((street, index) => ({
           run_id: run.id, sequence: index + 1, official_street_id: street.id,
           unit_key: `street:${street.street_code}`,
@@ -133,7 +187,7 @@ Deno.serve(async (request) => {
         }))
     if (!units.length) {
       await db.from('runs').update({ status: 'failed', error_message: 'לא נמצאו רחובות מיובאים לרשות.' }).eq('id', run.id)
-      throw new Error('לא נמצאו רחובות מיובאים לרשות. יש להריץ תחילה את importer.')
+      throw new Error('לא נמצאו יחידות חיפוש זמינות לרשות שנבחרה.')
     }
     const insertBatchSize = 500
     for (let offset = 0; offset < units.length; offset += insertBatchSize) {

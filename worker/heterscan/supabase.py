@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 import httpx
 
-from .domain import ApplicationRecord, SearchUnit
+from .domain import ApplicationRecord, DiscoveredUnit, SearchUnit
 from .normalize import content_hash, record_identity
 
 
@@ -64,35 +64,65 @@ class SupabaseRepository:
         self._rest("PATCH", f"runs?id=eq.{quote(run_id)}", json=values)
 
     def cancellation_requested(self, run_id: str) -> bool:
-        rows = self._rest(
-            "GET", f"runs?id=eq.{quote(run_id)}&select=cancel_requested_at"
-        ).json()
+        rows = self._rest("GET", f"runs?id=eq.{quote(run_id)}&select=cancel_requested_at").json()
         if not rows:
             raise RuntimeError(f"Run {run_id} not found")
         return bool(rows[0].get("cancel_requested_at"))
 
     def claim_units(self, run_id: str, worker_id: str, limit: int = 20) -> list[SearchUnit]:
         rows = self._rest(
-            "POST", "rpc/claim_run_units", json={"p_run_id": run_id, "p_worker_id": worker_id, "p_limit": limit}
+            "POST",
+            "rpc/claim_run_units",
+            json={"p_run_id": run_id, "p_worker_id": worker_id, "p_limit": limit},
         ).json()
         return [
             SearchUnit(
-                id=row["id"], run_id=row["run_id"], sequence=row["sequence"],
-                unit_key=row["unit_key"], payload=row["unit_payload"],
+                id=row["id"],
+                run_id=row["run_id"],
+                sequence=row["sequence"],
+                unit_key=row["unit_key"],
+                payload=row["unit_payload"],
             )
             for row in rows
         ]
 
     def complete_unit(self, unit_id: str, result_count: int) -> None:
         self._rest(
-            "PATCH", f"run_units?id=eq.{quote(unit_id)}",
+            "PATCH",
+            f"run_units?id=eq.{quote(unit_id)}",
             json={"status": "completed", "result_count": result_count, "completed_at": "now"},
         )
 
     def fail_unit(self, unit_id: str, message: str, *, review: bool = False) -> None:
         self._rest(
-            "PATCH", f"run_units?id=eq.{quote(unit_id)}",
-            json={"status": "requires_review" if review else "failed", "error_message": message[:2000], "completed_at": "now"},
+            "PATCH",
+            f"run_units?id=eq.{quote(unit_id)}",
+            json={
+                "status": "requires_review" if review else "failed",
+                "error_message": message[:2000],
+                "completed_at": "now",
+            },
+        )
+
+    def enqueue_units(self, run_id: str, units: list[DiscoveredUnit]) -> int:
+        if not units:
+            return 0
+        payload = [{"unit_key": unit.unit_key, "unit_payload": _json_safe(unit.payload)} for unit in units]
+        return int(
+            self._rest(
+                "POST",
+                "rpc/enqueue_run_units",
+                json={"p_run_id": run_id, "p_units": payload},
+            ).json()
+            or 0
+        )
+
+    def finish_units(self, updates: list[dict[str, Any]]) -> int:
+        """Finish a mixed batch of units in one database round trip."""
+        if not updates:
+            return 0
+        return int(
+            self._rest("POST", "rpc/finish_run_units", json={"p_updates": _json_safe(updates)}).json() or 0
         )
 
     def save_application(self, run_id: str, record: ApplicationRecord) -> str:
@@ -107,7 +137,7 @@ class SupabaseRepository:
     ) -> list[str]:
         saved_ids: list[str] = []
         for offset in range(0, len(records), batch_size):
-            saved_ids.extend(self._save_application_batch(run_id, records[offset:offset + batch_size]))
+            saved_ids.extend(self._save_application_batch(run_id, records[offset : offset + batch_size]))
         return saved_ids
 
     def _save_application_batch(self, run_id: str, records: list[ApplicationRecord]) -> list[str]:
@@ -151,17 +181,23 @@ class SupabaseRepository:
             application_id = application["id"]
             saved_ids.append(application_id)
             run_links.append({"run_id": run_id, "application_id": application_id})
-            versions.append({
-                "application_id": application_id,
-                "run_id": run_id,
-                "content_hash": application["content_hash"],
-                "snapshot": _json_safe(record.raw_data),
-            })
+            versions.append(
+                {
+                    "application_id": application_id,
+                    "run_id": run_id,
+                    "content_hash": application["content_hash"],
+                    "snapshot": _json_safe(record.raw_data),
+                }
+            )
             record_events = []
             if record.is_approved:
-                record_events.append({"event_type": "approval", "event_date": str(record.approval_date or "") or None})
+                record_events.append(
+                    {"event_type": "approval", "event_date": str(record.approval_date or "") or None}
+                )
             if record.is_permit_issued:
-                record_events.append({"event_type": "permit_issued", "event_date": str(record.permit_issue_date or "") or None})
+                record_events.append(
+                    {"event_type": "permit_issued", "event_date": str(record.permit_issue_date or "") or None}
+                )
             for event in record_events:
                 events[(application_id, event["event_type"])] = {
                     "application_id": application_id,
@@ -172,12 +208,14 @@ class SupabaseRepository:
                 }
 
         self._rest(
-            "POST", "run_applications?on_conflict=run_id,application_id",
+            "POST",
+            "run_applications?on_conflict=run_id,application_id",
             headers={"Prefer": "resolution=ignore-duplicates"},
             json=run_links,
         )
         self._rest(
-            "POST", "application_versions?on_conflict=application_id,content_hash",
+            "POST",
+            "application_versions?on_conflict=application_id,content_hash",
             headers={"Prefer": "resolution=ignore-duplicates"},
             json=versions,
         )
@@ -224,24 +262,40 @@ class SupabaseRepository:
         return self._get_all(f"run_units?run_id=eq.{quote(run_id)}&select=*&order=sequence")
 
     def log(self, run_id: str, level: str, event: str, context: dict[str, Any] | None = None) -> None:
-        self._rest("POST", "run_logs", json={"run_id": run_id, "level": level, "event": event, "context": context or {}})
+        self._rest(
+            "POST",
+            "run_logs",
+            json={"run_id": run_id, "level": level, "event": event, "context": context or {}},
+        )
 
     def upload_report(self, storage_path: str, content: bytes) -> None:
         response = self.client.post(
-            f"{self.url}/storage/v1/object/reports/{storage_path}", content=content,
-            headers={"Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "x-upsert": "true"},
+            f"{self.url}/storage/v1/object/reports/{storage_path}",
+            content=content,
+            headers={
+                "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "x-upsert": "true",
+            },
         )
         if response.is_error:
             raise RuntimeError(f"Report upload failed ({response.status_code}): {response.text[:500]}")
 
     def save_report_metadata(self, run_id: str, storage_path: str, checksum: str, size: int) -> None:
         self._rest(
-            "POST", "reports?on_conflict=run_id",
+            "POST",
+            "reports?on_conflict=run_id",
             headers={"Prefer": "resolution=merge-duplicates"},
-            json={"run_id": run_id, "storage_path": storage_path, "checksum_sha256": checksum, "file_size": size},
+            json={
+                "run_id": run_id,
+                "storage_path": storage_path,
+                "checksum_sha256": checksum,
+                "file_size": size,
+            },
         )
 
-    def upsert_many(self, table: str, rows: Iterable[dict[str, Any]], *, conflict: str, batch_size: int = 500) -> int:
+    def upsert_many(
+        self, table: str, rows: Iterable[dict[str, Any]], *, conflict: str, batch_size: int = 500
+    ) -> int:
         batch: list[dict[str, Any]] = []
         count = 0
         for row in rows:
@@ -257,6 +311,8 @@ class SupabaseRepository:
 
     def _upsert_batch(self, table: str, rows: list[dict[str, Any]], conflict: str) -> None:
         self._rest(
-            "POST", f"{table}?on_conflict={conflict}",
-            headers={"Prefer": "resolution=merge-duplicates"}, json=rows,
+            "POST",
+            f"{table}?on_conflict={conflict}",
+            headers={"Prefer": "resolution=merge-duplicates"},
+            json=rows,
         )

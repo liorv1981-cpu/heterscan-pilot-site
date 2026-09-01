@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from datetime import date
 
-from ..domain import ApplicationRecord, SearchUnit
+from ..domain import ApplicationRecord, DiscoveryResult, SearchUnit
 
 
 class Adapter(ABC):
@@ -19,5 +19,7 @@ class Adapter(ABC):
         """Release adapter-owned resources. Stateless adapters need no cleanup."""
 
     @abstractmethod
-    def collect(self, unit: SearchUnit, date_from: date, date_to: date) -> list[ApplicationRecord]:
+    def collect(
+        self, unit: SearchUnit, date_from: date, date_to: date
+    ) -> list[ApplicationRecord] | DiscoveryResult:
         raise NotImplementedError

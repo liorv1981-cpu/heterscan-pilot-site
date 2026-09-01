@@ -17,6 +17,19 @@ class SearchUnit:
 
 
 @dataclass(slots=True)
+class DiscoveredUnit:
+    unit_key: str
+    payload: dict[str, Any]
+
+
+@dataclass(slots=True)
+class DiscoveryResult:
+    """Durable child work discovered by a source lookup unit."""
+
+    units: list[DiscoveredUnit]
+
+
+@dataclass(slots=True)
 class ApplicationRecord:
     city_id: str
     application_number: str | None
