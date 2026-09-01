@@ -3,8 +3,11 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from typing import Any
 
-from heterscan.supabase import SupabaseRepository, _json_safe
+import httpx
+
+from heterscan import supabase as supabase_module
 from heterscan.domain import ApplicationRecord, DiscoveredUnit
+from heterscan.supabase import SupabaseRepository, _json_safe
 
 
 class FakeResponse:
@@ -13,6 +16,31 @@ class FakeResponse:
 
     def json(self) -> Any:
         return self.data
+
+    def raise_for_status(self) -> None:
+        return None
+
+
+def test_rest_retries_transient_connection_failures(monkeypatch) -> None:
+    repository = SupabaseRepository.__new__(SupabaseRepository)
+    repository.url = "https://example.supabase.co"
+    attempts = 0
+    delays: list[float] = []
+
+    class FakeClient:
+        def request(self, _method: str, _url: str, **_kwargs: Any) -> FakeResponse:
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise httpx.ConnectError("temporary DNS failure")
+            return FakeResponse({"ok": True})
+
+    repository.client = FakeClient()  # type: ignore[assignment]
+    monkeypatch.setattr(supabase_module.time, "sleep", delays.append)
+
+    assert repository._rest("GET", "runs?limit=1").json() == {"ok": True}
+    assert attempts == 3
+    assert delays == [0.5, 1.0]
 
 
 def test_json_safe_serializes_nested_dates_and_tuples() -> None:

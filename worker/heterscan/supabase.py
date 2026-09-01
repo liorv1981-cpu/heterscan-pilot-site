@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from collections.abc import Iterable
 from datetime import date, datetime
 from typing import Any
@@ -40,9 +41,19 @@ class SupabaseRepository:
         self.client.close()
 
     def _rest(self, method: str, path: str, **kwargs) -> httpx.Response:
-        response = self.client.request(method, f"{self.url}/rest/v1/{path}", **kwargs)
-        response.raise_for_status()
-        return response
+        # A short DNS interruption on the self-hosted Windows runner must not
+        # discard a multi-minute scan. JSON requests are buffered and can be
+        # retried safely when the TCP connection was never established.
+        for attempt in range(6):
+            try:
+                response = self.client.request(method, f"{self.url}/rest/v1/{path}", **kwargs)
+                response.raise_for_status()
+                return response
+            except httpx.ConnectError:
+                if attempt == 5:
+                    raise
+                time.sleep(0.5 * (2**attempt))
+        raise AssertionError("unreachable")
 
     def _get_all(self, path: str, *, page_size: int = 1000) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []

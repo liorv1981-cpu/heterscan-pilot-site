@@ -351,17 +351,23 @@ def run(run_id: str) -> int:
         )
         return _finalize_report(repository, run_id, city["id"], date_from, date_to, final_status)
     except Exception as error:
-        repository.update_run(
-            run_id,
-            {
-                "status": "failed",
-                "error_message": str(error)[:2000],
-                "completed_at": _iso_now(),
-                "lock_owner": None,
-                "lock_expires_at": None,
-            },
-        )
-        repository.log(run_id, "error", "worker_failed", {"error": str(error)[:1000]})
+        try:
+            repository.update_run(
+                run_id,
+                {
+                    "status": "failed",
+                    "error_message": str(error)[:2000],
+                    "completed_at": _iso_now(),
+                    "lock_owner": None,
+                    "lock_expires_at": None,
+                },
+            )
+            repository.log(run_id, "error", "worker_failed", {"error": str(error)[:1000]})
+        except Exception as reporting_error:
+            print(
+                f"Could not persist worker failure: {reporting_error}; original error: {error}",
+                file=sys.stderr,
+            )
         raise
     finally:
         if adapter is not None:
