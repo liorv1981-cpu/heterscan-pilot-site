@@ -21,7 +21,7 @@ class FakeResponse:
         return None
 
 
-def test_rest_retries_transient_connection_failures(monkeypatch) -> None:
+def test_rest_retries_transient_transport_failures(monkeypatch) -> None:
     repository = SupabaseRepository.__new__(SupabaseRepository)
     repository.url = "https://example.supabase.co"
     attempts = 0
@@ -31,8 +31,10 @@ def test_rest_retries_transient_connection_failures(monkeypatch) -> None:
         def request(self, _method: str, _url: str, **_kwargs: Any) -> FakeResponse:
             nonlocal attempts
             attempts += 1
-            if attempts < 3:
+            if attempts == 1:
                 raise httpx.ConnectError("temporary DNS failure")
+            if attempts == 2:
+                raise httpx.RemoteProtocolError("server disconnected")
             return FakeResponse({"ok": True})
 
     repository.client = FakeClient()  # type: ignore[assignment]

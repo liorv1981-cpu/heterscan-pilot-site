@@ -49,7 +49,7 @@ class SupabaseRepository:
                 response = self.client.request(method, f"{self.url}/rest/v1/{path}", **kwargs)
                 response.raise_for_status()
                 return response
-            except httpx.ConnectError:
+            except httpx.TransportError:
                 if attempt == 5:
                     raise
                 time.sleep(0.5 * (2**attempt))
