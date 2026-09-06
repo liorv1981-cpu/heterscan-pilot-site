@@ -7,7 +7,7 @@ from urllib.parse import urlencode
 
 from lxml import html
 
-from ..domain import ApplicationRecord, DiscoveredUnit, DiscoveryResult, SearchUnit
+from ..domain import AdapterReviewRequired, ApplicationRecord, DiscoveredUnit, DiscoveryResult, SearchUnit
 from ..http import AdaptiveRateLimiter, PublicHttpClient
 from ..normalize import clean_text, in_range, normalized_key, parse_date
 from .base import Adapter
@@ -15,7 +15,7 @@ from .base import Adapter
 
 class ComplotAdapter(Adapter):
     name = "complot"
-    version = "0.2.0"
+    version = "0.2.1"
     autocomplete_url = "https://handasi.complot.co.il/wsComplotPublicData/ComplotPublicData.asmx/GetBakashot"
 
     def __init__(self, city_id: str, city_name: str, config: dict) -> None:
@@ -191,26 +191,54 @@ class ComplotAdapter(Adapter):
                 if isinstance(item, dict) and clean_text(item.get("label")).isdigit()
             )
         )
+        too_long_lengths = sorted({len(number) for number in labels if len(number) > request_number_length})
+        if too_long_lengths:
+            observed = ", ".join(str(length) for length in too_long_lengths)
+            raise AdapterReviewRequired(
+                "אורך מספר הבקשה שהוגדר לרשות אינו תואם למקור: "
+                f"הוגדר {request_number_length}, התקבל {observed}."
+            )
+        request_labels = [
+            number
+            for number in labels
+            if len(number) == request_number_length and number.startswith(year)
+        ]
         units = [
             DiscoveredUnit(
                 unit_key=f"request:{number}",
                 payload={"mode": "request", "requestNumber": number},
             )
+            for number in request_labels
+        ]
+        returned_child_prefixes = [
+            number
             for number in labels
-            if len(number) == request_number_length and number.startswith(year)
+            if number.startswith(prefix)
+            and number.startswith(year)
+            and len(prefix) < len(number) < request_number_length
         ]
         # The autocomplete returns at most ten rows. Split a full page into
         # durable child prefixes, so cancellation or 429 never repeats a year.
         # With one digit left there are at most ten possible request numbers,
         # all already present in this response. Splitting that final digit
         # would only repeat one request per child prefix.
+        child_prefixes = list(dict.fromkeys(returned_child_prefixes))
         if len(items) >= 10 and len(prefix) < request_number_length - 1:
-            units.extend(
-                DiscoveredUnit(
-                    unit_key=f"discover-prefix:{prefix}{digit}",
-                    payload={"mode": "discover-prefix", "prefix": f"{prefix}{digit}", "year": year},
-                )
-                for digit in range(10)
+            child_prefixes = list(
+                dict.fromkeys([*child_prefixes, *(f"{prefix}{digit}" for digit in range(10))])
+            )
+        units.extend(
+            DiscoveredUnit(
+                unit_key=f"discover-prefix:{child_prefix}",
+                payload={"mode": "discover-prefix", "prefix": child_prefix, "year": year},
+            )
+            for child_prefix in child_prefixes
+        )
+        if labels and not request_labels and not child_prefixes:
+            observed = ", ".join(str(length) for length in sorted({len(number) for number in labels}))
+            raise AdapterReviewRequired(
+                "לא ניתן לזהות מספרי בקשה באורך שהוגדר לרשות: "
+                f"הוגדר {request_number_length}, התקבל {observed}."
             )
         return DiscoveryResult(units=units)
 

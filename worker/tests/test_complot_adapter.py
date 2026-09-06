@@ -1,9 +1,11 @@
 from datetime import date
 from urllib.parse import parse_qs, urlparse
 
+import pytest
+
 from heterscan.adapters import complot as complot_module
 from heterscan.adapters.complot import ComplotAdapter
-from heterscan.domain import DiscoveryResult, SearchUnit
+from heterscan.domain import AdapterReviewRequired, DiscoveryResult, SearchUnit
 
 
 class _Response:
@@ -17,6 +19,7 @@ class _Response:
 
 class _SharedFakeClient:
     instances = []
+    request_number_length = 8
 
     def __init__(self, **_kwargs) -> None:
         self.calls: list[str] = []
@@ -30,7 +33,7 @@ class _SharedFakeClient:
         self.calls.append(url)
         if url == ComplotAdapter.autocomplete_url:
             prefix = str(_kwargs["json"]["prefix"])
-            remaining_digits = 8 - len(prefix)
+            remaining_digits = self.request_number_length - len(prefix)
             return _Response(
                 data={"d": [{"label": f"{prefix}{index:0{remaining_digits}d}"} for index in range(10)]}
             )
@@ -58,6 +61,22 @@ class _SharedFakeClient:
             <tr><td>נוכחי</td><td>היתר בתוקף</td></tr>
           </table>
         """)
+
+
+class _TenDigitFakeClient(_SharedFakeClient):
+    instances = []
+    request_number_length = 10
+
+
+class _PrefixHintFakeClient(_SharedFakeClient):
+    instances = []
+
+    def request(self, _method: str, url: str, **_kwargs) -> _Response:
+        self.calls.append(url)
+        prefix = str(_kwargs["json"]["prefix"])
+        return _Response(
+            data={"d": [{"label": prefix}, *({"label": f"{prefix}{index}"} for index in range(9))]}
+        )
 
 
 def test_collect_returns_every_in_range_application_and_reuses_one_client(monkeypatch) -> None:
@@ -104,6 +123,62 @@ def test_full_discovery_prefix_creates_requests_and_durable_child_prefixes(monke
         f"discover-prefix:2026{digit}" for digit in range(10)
     ]
     assert len(_SharedFakeClient.instances[0].calls) == 1
+
+
+def test_ten_digit_request_numbers_are_discovered_when_configured(monkeypatch) -> None:
+    _TenDigitFakeClient.instances.clear()
+    monkeypatch.setattr(complot_module, "PublicHttpClient", _TenDigitFakeClient)
+    adapter = ComplotAdapter("4000", "חיפה", {"site_id": "16", "request_number_length": 10})
+    unit = SearchUnit(
+        id="unit-1",
+        run_id="run-1",
+        sequence=1,
+        unit_key="discover-prefix:2026",
+        payload={"mode": "discover-prefix", "prefix": "2026", "year": "2026"},
+    )
+
+    result = adapter.collect(unit, date(2026, 1, 1), date(2026, 12, 31))
+
+    assert isinstance(result, DiscoveryResult)
+    assert result.units[0].unit_key == "request:2026000000"
+    assert result.units[9].unit_key == "request:2026000009"
+    assert len(result.units) == 20
+
+
+def test_unexpected_request_number_length_requires_review(monkeypatch) -> None:
+    _TenDigitFakeClient.instances.clear()
+    monkeypatch.setattr(complot_module, "PublicHttpClient", _TenDigitFakeClient)
+    adapter = ComplotAdapter("4000", "חיפה", {"site_id": "16", "request_number_length": 8})
+    unit = SearchUnit(
+        id="unit-1",
+        run_id="run-1",
+        sequence=1,
+        unit_key="discover-prefix:2026",
+        payload={"mode": "discover-prefix", "prefix": "2026", "year": "2026"},
+    )
+
+    with pytest.raises(AdapterReviewRequired, match="הוגדר 8, התקבל 10"):
+        adapter.collect(unit, date(2026, 1, 1), date(2026, 12, 31))
+
+
+def test_shorter_autocomplete_hints_continue_prefix_discovery(monkeypatch) -> None:
+    _PrefixHintFakeClient.instances.clear()
+    monkeypatch.setattr(complot_module, "PublicHttpClient", _PrefixHintFakeClient)
+    adapter = ComplotAdapter("6200", "בת ים", {"site_id": "81", "request_number_length": 8})
+    unit = SearchUnit(
+        id="unit-1",
+        run_id="run-1",
+        sequence=1,
+        unit_key="discover-prefix:2026",
+        payload={"mode": "discover-prefix", "prefix": "2026", "year": "2026"},
+    )
+
+    result = adapter.collect(unit, date(2026, 1, 1), date(2026, 12, 31))
+
+    assert isinstance(result, DiscoveryResult)
+    assert [item.unit_key for item in result.units] == [
+        f"discover-prefix:2026{digit}" for digit in range(10)
+    ]
 
 
 def test_direct_request_refresh_reads_latest_status_without_street_scan(monkeypatch) -> None:
