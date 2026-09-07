@@ -1,5 +1,6 @@
 import { corsHeaders, errorResponse, json } from '../_shared/http.ts'
 import { requireAdmin, serviceClient } from '../_shared/clients.ts'
+import { recoverAbandonedRuns } from './recovery.ts'
 
 interface StartRunBody { cityId: string; dateFrom: string; dateTo: string }
 interface JerusalemStreet { municipal_code: string; municipal_name: string }
@@ -88,6 +89,7 @@ Deno.serve(async (request) => {
     if (tokenError || !token) throw new Error('GitHub Actions טרם הוגדר בסביבת הפיילוט.')
     const runnerLabel = localRunnerLabel
     await requireOnlineRunner(repository, token, runnerLabel)
+    await recoverAbandonedRuns(db, repository, workflow, token)
 
     const scanStrategy = city.adapter_name === 'complot' ? 'application-number' : 'source-default'
     const snapshot = {
