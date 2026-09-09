@@ -96,6 +96,15 @@ class ComplotAdapter(Adapter):
         )
         return f"https://handasi.complot.co.il/magicscripts/mgrqispi.dll?{query}"
 
+    def _public_source_url(self, request_number: str) -> str:
+        if str(self.config.get("site_id")) == "87":
+            return (
+                "https://yavne.complot.co.il/iturbakashot2/"
+                "#search/GetBakashotByNumber&siteid=87&grp=0&t=0"
+                f"&b={request_number}&l=true&arguments=siteId,grp,t,b,l"
+            )
+        return self._detail_url(request_number)
+
     def _list_rows(self, markup: str) -> list[dict[str, str]]:
         document = html.fromstring(markup)
         rows: list[dict[str, str]] = []
@@ -316,7 +325,7 @@ class ComplotAdapter(Adapter):
             permit_status_original=permit_status,
             is_permit_issued=issued,
             permit_confidence="high" if permit_number and permit_date else ("medium" if issued else None),
-            source_url=detail_url,
+            source_url=self._public_source_url(request_number),
             source_reference=request_number,
             adapter_name=self.name,
             adapter_version=self.version,

@@ -101,6 +101,16 @@ def test_collect_returns_every_in_range_application_and_reuses_one_client(monkey
     assert _SharedFakeClient.instances[0].closed is True
 
 
+def test_yavne_records_link_to_the_public_search_result() -> None:
+    adapter = ComplotAdapter("2660", "יבנה", {"site_id": "87", "locality_code": "2660"})
+
+    assert adapter._public_source_url("20260008") == (
+        "https://yavne.complot.co.il/iturbakashot2/"
+        "#search/GetBakashotByNumber&siteid=87&grp=0&t=0"
+        "&b=20260008&l=true&arguments=siteId,grp,t,b,l"
+    )
+
+
 def test_full_discovery_prefix_creates_requests_and_durable_child_prefixes(monkeypatch) -> None:
     _SharedFakeClient.instances.clear()
     monkeypatch.setattr(complot_module, "PublicHttpClient", _SharedFakeClient)
