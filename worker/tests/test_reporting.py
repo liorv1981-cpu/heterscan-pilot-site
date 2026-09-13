@@ -53,3 +53,14 @@ def test_approved_without_permit_stays_separate_from_issued() -> None:
     assert workbook["היתרים שנמצאו"].max_row == 1
     assert workbook["בקשות והיתרים"]["J2"].value == "טרם הופק"
     assert workbook["בקשות והיתרים"]["L2"].value == "אושר — טרם הופק היתר"
+
+
+def test_source_text_cannot_become_an_excel_formula() -> None:
+    run = {"city_name": "ירושלים", "date_from": "2026-01-01", "date_to": "2026-01-31", "status": "completed"}
+    expression = '=HYPERLINK("https://example.test/", "external")'
+    payload, _ = build_report(run, [{"address": expression, "source_url": expression}], [])
+    workbook = load_workbook(BytesIO(payload))
+    for cell in (workbook["בקשות והיתרים"]["A2"], workbook["בקשות והיתרים"]["O2"]):
+        assert cell.value == expression
+        assert cell.data_type == "s"
+        assert cell.hyperlink is None

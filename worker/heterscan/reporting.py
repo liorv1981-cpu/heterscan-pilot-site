@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from io import BytesIO
 from typing import Any
+from urllib.parse import urlsplit
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -42,9 +43,12 @@ def _sheet(
         cell.alignment = Alignment(horizontal="center", vertical="center", readingOrder=2)
     for row in sheet.iter_rows(min_row=2):
         for cell in row:
+            # Municipal content is data, never an executable spreadsheet formula.
+            if cell.data_type == "f":
+                cell.data_type = "s"
             cell.alignment = Alignment(vertical="top", wrap_text=True, readingOrder=2)
         source_cell = row[-1] if row else None
-        if source_cell and isinstance(source_cell.value, str) and source_cell.value.startswith("http"):
+        if source_cell and isinstance(source_cell.value, str) and urlsplit(source_cell.value).scheme in {"http", "https"}:
             source_cell.hyperlink = source_cell.value
             source_cell.style = "Hyperlink"
     for index, (_, label) in enumerate(headers, 1):
