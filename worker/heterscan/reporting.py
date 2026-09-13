@@ -85,7 +85,15 @@ def build_report(
             ("units_completed", "יחידות שהושלמו"),
         ],
     )
-    report_results = [{**row, "display_status": _display_status(row)} for row in results]
+    report_results = [
+        {
+            **row,
+            "display_status": _display_status(row),
+            "permit_number": row.get("permit_number")
+            or ("לא ידוע" if row.get("is_permit_issued") else "טרם הופק"),
+        }
+        for row in results
+    ]
     common_headers = [
         ("address", "כתובת"),
         ("application_number", "מספר בקשה"),
