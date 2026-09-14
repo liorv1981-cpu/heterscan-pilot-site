@@ -265,9 +265,18 @@ class SupabaseRepository:
 
     def run_results(self, run_id: str) -> list[dict[str, Any]]:
         rows = self._get_all(
-            f"run_applications?run_id=eq.{quote(run_id)}&select=discovered_at,application:applications(*)"
+            f"run_applications?run_id=eq.{quote(run_id)}"
+            "&select=discovered_at,result_snapshot,application:applications(*),run:runs(date_from,date_to)"
         )
-        return [{**row["application"], "discovered_at": row["discovered_at"]} for row in rows]
+        results = []
+        for row in rows:
+            application = row.get("result_snapshot") or row["application"]
+            submitted = application.get("submission_date")
+            period = row.get("run")
+            if period and (not submitted or not period["date_from"] <= submitted <= period["date_to"]):
+                continue
+            results.append({**application, "discovered_at": row["discovered_at"]})
+        return results
 
     def run_units(self, run_id: str) -> list[dict[str, Any]]:
         return self._get_all(f"run_units?run_id=eq.{quote(run_id)}&select=*&order=sequence")

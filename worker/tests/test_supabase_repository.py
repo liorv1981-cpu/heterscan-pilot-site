@@ -21,6 +21,22 @@ class FakeResponse:
         return None
 
 
+def test_run_results_use_snapshot_and_enforce_the_original_period():
+    repository = SupabaseRepository.__new__(SupabaseRepository)
+    repository._get_all = lambda _path: [
+        {"discovered_at": "2026-02-01", "application": {"address": "changed"},
+         "result_snapshot": {"address": "original", "submission_date": "2026-01-02", "is_permit_issued": False},
+         "run": {"date_from": "2026-01-01", "date_to": "2026-01-31"}},
+        {"discovered_at": "2026-02-01", "application": {},
+         "result_snapshot": {"submission_date": "2025-12-31"},
+         "run": {"date_from": "2026-01-01", "date_to": "2026-01-31"}},
+    ]
+    rows = repository.run_results("run")
+    assert len(rows) == 1
+    assert rows[0]["address"] == "original"
+    assert rows[0]["is_permit_issued"] is False
+
+
 def test_rest_retries_transient_transport_failures(monkeypatch) -> None:
     repository = SupabaseRepository.__new__(SupabaseRepository)
     repository.url = "https://example.supabase.co"
