@@ -64,3 +64,11 @@ def test_source_text_cannot_become_an_excel_formula() -> None:
         assert cell.value == expression
         assert cell.data_type == "s"
         assert cell.hyperlink is None
+
+
+def test_malformed_source_url_is_preserved_without_breaking_report() -> None:
+    run = {"city_name": "ירושלים", "date_from": "2026-01-01", "date_to": "2026-01-31", "status": "requires_review"}
+    payload, _ = build_report(run, [{"source_url": "https://[malformed"}], [])
+    cell = load_workbook(BytesIO(payload))["בקשות והיתרים"]["O2"]
+    assert cell.value == "https://[malformed"
+    assert cell.hyperlink is None
