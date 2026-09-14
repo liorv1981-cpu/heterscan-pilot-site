@@ -269,7 +269,14 @@ class ComplotAdapter(Adapter):
         if observed_number != re.sub(r"\D", "", request_number):
             raise AdapterReviewRequired(
                 "פרטי המקור אינם מזהים את הבקשה שהתבקשה; נדרשת בדיקת מקור.",
-                diagnostics={"requested_number": request_number, "observed_number": observed_number},
+                diagnostics={
+                    "requested_number": request_number, "observed_number": observed_number,
+                    "title_container": bool(document.xpath("//*[@id='result-title-div-id']")),
+                    # Public display text only: exclude scripts, styles and form values.
+                    "source_excerpt": clean_text(" ".join(document.xpath(
+                        ".//text()[not(ancestor::script or ancestor::style or ancestor::form)]"
+                    )))[:300],
+                },
             )
         fields = self._detail_fields(document)
         events = self._table_rows(document, "table-events")
