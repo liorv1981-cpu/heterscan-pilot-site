@@ -278,6 +278,17 @@ class SupabaseRepository:
             results.append({**application, "discovered_at": row["discovered_at"]})
         return results
 
+    def finalize_run(self, run_id: str, fields: dict[str, Any]) -> bool:
+        path = f"runs?id=eq.{quote(run_id)}"
+        if fields["status"] != "cancelled":
+            path += "&status=neq.cancelled&cancel_requested_at=is.null"
+        return bool(self._rest("PATCH", path, headers={"Prefer": "return=representation"}, json=fields).json())
+
+    def update_owned_run(self, run_id: str, worker_id: str, fields: dict[str, Any]) -> bool:
+        path = (f"runs?id=eq.{quote(run_id)}&lock_owner=eq.{quote(worker_id, safe='')}"
+                "&status=in.(created,dispatching,running,safely_stopped)&cancel_requested_at=is.null")
+        return bool(self._rest("PATCH", path, headers={"Prefer": "return=representation"}, json=fields).json())
+
     def run_units(self, run_id: str) -> list[dict[str, Any]]:
         return self._get_all(f"run_units?run_id=eq.{quote(run_id)}&select=*&order=sequence")
 

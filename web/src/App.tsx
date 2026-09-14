@@ -35,7 +35,6 @@ export default function App() {
   const displayedId = displayedRun?.id
   const displayedStatus = displayedRun?.status
   const displayedReport = displayedRun?.reportPath
-  const displayedStartedAt = displayedRun?.startedAt
 
   // Discover work on reload/reconnection, independently of the displayed history.
   useEffect(() => {
@@ -119,7 +118,7 @@ export default function App() {
 
   // A stop may finish before the worker uploads its partial report.
   useEffect(() => {
-    if (!displayedId || !displayedStatus || isActiveRun({ status: displayedStatus }) || displayedReport || !displayedStartedAt) return
+    if (!displayedId || !displayedStatus || isActiveRun({ status: displayedStatus }) || displayedReport) return
     let cancelled = false
     let timer = 0
     async function refreshReport() {
@@ -134,7 +133,7 @@ export default function App() {
     }
     timer = window.setTimeout(() => void refreshReport(), 1500)
     return () => { cancelled = true; window.clearTimeout(timer) }
-  }, [displayedId, displayedStatus, displayedReport, displayedStartedAt])
+  }, [displayedId, displayedStatus, displayedReport])
 
   async function startRun(input: StartRunInput) {
     if (!ready || startInFlight.current || isActiveRun(liveRun) || stopInFlight.current) return

@@ -108,3 +108,16 @@ it('keeps the run active if the stop request fails', async () => {
   expect(screen.queryByText('הסריקה בוטלה')).toBeNull()
   expect(screen.getByRole('combobox', { name: 'עיר' })).toBeDisabled()
 })
+
+it('waits for the partial report even if cancellation happened before worker startup', async () => {
+  const cancelled: Run = { ...running, status: 'cancelled', applicationsFound: 0, reportPath: undefined, startedAt: undefined }
+  mocked.api.startRun.mockResolvedValue(running)
+  mocked.api.cancelRun.mockResolvedValue(cancelled)
+  mocked.api.getRun.mockResolvedValue({ ...cancelled, reportPath: 'run/partial.xlsx' })
+  render(<App />)
+  fireEvent.click(await screen.findByRole('button', { name: 'הפעלת סריקה' }))
+  fireEvent.click(await screen.findByRole('button', { name: 'עצירת הסריקה' }))
+  fireEvent.click(screen.getByRole('button', { name: 'כן, עצור את הסריקה' }))
+  await screen.findByText('הסריקה בוטלה')
+  await waitFor(() => expect(screen.getByRole('button', { name: 'הורדת Excel חלקי' })).toBeEnabled(), { timeout: 4000 })
+})

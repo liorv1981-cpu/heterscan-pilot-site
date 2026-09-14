@@ -104,13 +104,16 @@ def _finalize_report(
 ) -> int:
     results = repository.run_results(run_id)
     units = repository.run_units(run_id)
-    report_run = {**repository.get_run(run_id), "status": final_status}
+    current = repository.get_run(run_id)
+    if current["status"] == "cancelled" or current.get("cancel_requested_at"):
+        final_status = "cancelled"
+    report_run = {**current, "status": final_status}
     report_bytes, checksum = build_report(report_run, results, units)
     storage_path = f"{run_id}/HETERSCAN_{city_id}_{date_from}_{date_to}_{run_id}.xlsx"
     repository.upload_report(storage_path, report_bytes)
     repository.save_report_metadata(run_id, storage_path, checksum, len(report_bytes))
     counts = repository.progress_counts(run_id)
-    repository.update_run(
+    finalized = repository.finalize_run(
         run_id,
         {
             **counts,
@@ -122,6 +125,12 @@ def _finalize_report(
             "lock_expires_at": None,
         },
     )
+    if not finalized:
+        if final_status == "cancelled":
+            raise RuntimeError("Cancelled run disappeared while publishing its report")
+        # The server accepted cancellation during upload. Rebuild the artifact
+        # with the truthful terminal status before exposing the download.
+        return _finalize_report(repository, run_id, city_id, date_from, date_to, "cancelled")
     event = "worker_cancelled" if final_status == "cancelled" else "worker_completed"
     repository.log(run_id, "info", event, {"status": final_status, **counts})
     return 0
@@ -133,12 +142,26 @@ def run(run_id: str) -> int:
     worker_id = f"{socket.gethostname()}:{os.getpid()}"
     started = time.monotonic()
     max_seconds = int(os.environ.get("MAX_WORKER_SECONDS", "19800"))
+    claimed = False
     try:
+        initial = repository.get_run(run_id)
+        if initial["status"] == "cancelled":
+            if initial.get("report_path"):
+                return 0
+            return _finalize_report(repository, run_id, initial["city_id"],
+                                    _parse_date(initial["date_from"]), _parse_date(initial["date_to"]), "cancelled")
+        if initial["status"] not in {"created", "dispatching", "running", "safely_stopped"}:
+            return 0
         claimed = repository._rest(
             "POST", "rpc/claim_run", json={"p_run_id": run_id, "p_worker_id": worker_id, "p_ttl_minutes": 10}
         ).json()
         if not claimed:
-            raise RuntimeError("Run is locked by another worker or is no longer active")
+            current = repository.get_run(run_id)
+            if current["status"] == "cancelled" and not current.get("report_path"):
+                return _finalize_report(repository, run_id, current["city_id"],
+                                        _parse_date(current["date_from"]), _parse_date(current["date_to"]), "cancelled")
+            repository.log(run_id, "info", "worker_skipped", {"reason": "locked or terminal"})
+            return 0
         run_row = repository.get_run(run_id)
         snapshot = run_row["configuration_snapshot"]
         city = snapshot["city"]
@@ -289,14 +312,20 @@ def run(run_id: str) -> int:
                     {"failures": failure_context},
                 )
             counts = repository.progress_counts(run_id)
-            repository.update_run(
+            still_owned = repository.update_owned_run(
                 run_id,
+                worker_id,
                 {
                     **counts,
                     "heartbeat_at": _iso_now(),
                     "lock_expires_at": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
                 },
             )
+            if not still_owned:
+                if repository.cancellation_requested(run_id):
+                    return _finalize_report(repository, run_id, city["id"], date_from, date_to, "cancelled")
+                repository.log(run_id, "warning", "worker_ownership_changed", {"worker_id": worker_id})
+                return 0
             performance = (
                 adapter.performance_snapshot()
                 if adapter.name == "complot"
@@ -329,8 +358,9 @@ def run(run_id: str) -> int:
             "GET", f"run_units?run_id=eq.{run_id}&status=in.(pending,processing)&select=id&limit=1"
         ).json()
         if remaining:
-            repository.update_run(
+            checkpointed = repository.update_owned_run(
                 run_id,
+                worker_id,
                 {
                     "status": "safely_stopped",
                     "heartbeat_at": _iso_now(),
@@ -338,6 +368,10 @@ def run(run_id: str) -> int:
                     "lock_owner": None,
                 },
             )
+            if not checkpointed:
+                if repository.cancellation_requested(run_id):
+                    return _finalize_report(repository, run_id, city["id"], date_from, date_to, "cancelled")
+                return 0
             repository.log(run_id, "info", "worker_timebox_reached", {"remaining_units": len(remaining)})
             return 75
 
@@ -352,16 +386,18 @@ def run(run_id: str) -> int:
         return _finalize_report(repository, run_id, city["id"], date_from, date_to, final_status)
     except Exception as error:
         try:
-            repository.update_run(
-                run_id,
-                {
-                    "status": "failed",
-                    "error_message": str(error)[:2000],
-                    "completed_at": _iso_now(),
-                    "lock_owner": None,
-                    "lock_expires_at": None,
-                },
-            )
+            if claimed:
+                repository.update_owned_run(
+                    run_id,
+                    worker_id,
+                    {
+                        "status": "failed",
+                        "error_message": str(error)[:2000],
+                        "completed_at": _iso_now(),
+                        "lock_owner": None,
+                        "lock_expires_at": None,
+                    },
+                )
             repository.log(run_id, "error", "worker_failed", {"error": str(error)[:1000]})
         except Exception as reporting_error:
             print(
