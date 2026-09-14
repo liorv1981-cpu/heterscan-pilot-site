@@ -1,13 +1,29 @@
 from __future__ import annotations
 
 import random
+import re
 import threading
 import time
+from html import unescape
 from collections.abc import Callable
 
 import httpx
 
 from .domain import AdapterRateLimited, AdapterReviewRequired
+
+
+def _challenge_diagnostics(markup: str) -> dict:
+    """Log structural flags only, not response bodies, cookies or form values."""
+    sample = markup[:50000]
+    title = re.search(r"<title[^>]*>(.*?)</title>", sample, re.I | re.S)
+    rendered = re.sub(r"<(script|style)\b[^>]*>.*?</\1>", "", sample, flags=re.I | re.S)
+    rendered = unescape(re.sub(r"<[^>]+>", " ", rendered))
+    return {
+        "title": re.sub(r"\s+", " ", unescape(title.group(1))).strip()[:120] if title else None,
+        "request_detail_markup": "info-main" in sample and "result-title-div-id" in sample,
+        "captcha_in_rendered_text": "captcha" in rendered.lower(),
+        "script_markers": [marker for marker in ("recaptcha", "hcaptcha", "cf-chl-") if marker in sample.lower()],
+    }
 
 
 class AdaptiveRateLimiter:
@@ -151,7 +167,10 @@ class PublicHttpClient:
                 if response.status_code == 403 or captcha:
                     if self.rate_limiter:
                         self.rate_limiter.penalize(retry_after_seconds=10)
-                    raise AdapterReviewRequired(f"המקור החזיר חסימה או CAPTCHA ({response.status_code}).")
+                    raise AdapterReviewRequired(
+                        f"המקור החזיר חסימה או CAPTCHA ({response.status_code}).",
+                        diagnostics=_challenge_diagnostics(response.text),
+                    )
                 response.raise_for_status()
                 if self.rate_limiter:
                     self.rate_limiter.reward()

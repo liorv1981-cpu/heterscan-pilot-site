@@ -281,7 +281,8 @@ def run(run_id: str) -> int:
                         "error_message": str(error)[:2000],
                     }
                 )
-                failure_context.append({"unit": unit.unit_key, "review": review, "error": str(error)[:1000]})
+                failure_context.append({"unit": unit.unit_key, "review": review, "error": str(error)[:1000],
+                                        "diagnostics": getattr(error, "diagnostics", {})})
             try:
                 finished = repository.finish_units(unit_updates)
                 if finished != len(unit_updates):

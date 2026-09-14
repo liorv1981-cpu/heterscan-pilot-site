@@ -15,7 +15,7 @@ from .base import Adapter
 
 class ComplotAdapter(Adapter):
     name = "complot"
-    version = "0.2.1"
+    version = "0.2.2"
     autocomplete_url = "https://handasi.complot.co.il/wsComplotPublicData/ComplotPublicData.asmx/GetBakashot"
 
     def __init__(self, city_id: str, city_name: str, config: dict) -> None:
@@ -24,6 +24,7 @@ class ComplotAdapter(Adapter):
         self._parallelism = self.maximum_parallelism
         self._clean_waves = 0
         self._tuning_lock = threading.Lock()
+        self._range_counts = {"parsed_requests": 0, "before_range": 0, "after_range": 0, "in_range": 0}
         initial_rate = float(config.get("initial_requests_per_second", 1.0))
         self.rate_limiter = AdaptiveRateLimiter(
             requests_per_second=initial_rate,
@@ -61,7 +62,9 @@ class ComplotAdapter(Adapter):
                     self._clean_waves = 0
 
     def performance_snapshot(self) -> dict[str, float | int]:
-        return {"parallelism": self.parallelism(), **self.rate_limiter.snapshot()}
+        with self._tuning_lock:
+            counts = dict(self._range_counts)
+        return {"parallelism": self.parallelism(), **self.rate_limiter.snapshot(), **counts}
 
     @staticmethod
     def _text(node) -> str:
@@ -159,9 +162,9 @@ class ComplotAdapter(Adapter):
     def _detail_metadata(self, document) -> dict[str, str]:
         nodes = document.xpath("//*[@id='result-title-div-id']")
         title = self._text(nodes[0]) if nodes else ""
-        number_match = re.search(r"מספר הבקשה:\s*(\d+)", title)
+        number_match = re.search(r"מספר הבקשה:\s*([0-9/.]+)", title)
         address_match = re.search(r"כתובת:\s*(.*?)\s*תאריך הגשה:", title)
-        date_match = re.search(r"תאריך הגשה:\s*(\d{1,2}/\d{1,2}/\d{4})", title)
+        date_match = re.search(r"תאריך הגשה:\s*([0-9./-]+)", title)
         return {
             "request_number": number_match.group(1) if number_match else "",
             "address": clean_text(address_match.group(1)) if address_match else "",
@@ -192,7 +195,12 @@ class ComplotAdapter(Adapter):
             self.autocomplete_url,
             json={"site_id": int(self.config["site_id"]), "key": "0", "prefix": int(prefix)},
         )
-        items = response.json().get("d") or []
+        data = response.json()
+        if not isinstance(data, dict) or not isinstance(data.get("d"), list):
+            raise AdapterReviewRequired("מבנה תשובת החיפוש אינו תקין; לא ניתן להסיק שאין בקשות.")
+        items = data["d"]
+        if any(not isinstance(item, dict) or not clean_text(item.get("label")).isdigit() for item in items):
+            raise AdapterReviewRequired("תשובת החיפוש מכילה מזהי בקשה שלא ניתן לפענח.")
         labels = list(
             dict.fromkeys(
                 clean_text(item.get("label"))
@@ -257,6 +265,12 @@ class ComplotAdapter(Adapter):
         cached = cached or {}
         document = html.fromstring(markup)
         metadata = self._detail_metadata(document)
+        observed_number = re.sub(r"\D", "", metadata.get("request_number", ""))
+        if observed_number != re.sub(r"\D", "", request_number):
+            raise AdapterReviewRequired(
+                "פרטי המקור אינם מזהים את הבקשה שהתבקשה; נדרשת בדיקת מקור.",
+                diagnostics={"requested_number": request_number, "observed_number": observed_number},
+            )
         fields = self._detail_fields(document)
         events = self._table_rows(document, "table-events")
         requirements = self._table_rows(document, "table-requirments")
@@ -268,6 +282,12 @@ class ComplotAdapter(Adapter):
         )
 
         submitted = parse_date(metadata.get("submission_date") or cached.get("submissionDate"))
+        if submitted is None:
+            raise AdapterReviewRequired(
+                "חסר תאריך הגשה תקין במקור; לא ניתן לבדוק את טווח התאריכים.",
+                diagnostics={"request_number": request_number, "date_text": metadata.get("submission_date"),
+                             "date_field_labels": [key for key in fields if "תאריך" in key][:10]},
+            )
         permit_number = clean_text(self._field(fields, "מספר היתר")) or None
         permit_date = parse_date(self._field(fields, "תאריך הפקת היתר", "תאריך היתר"))
         explicit_status = clean_text(self._field(fields, "סטטוס", "מצב בקשה"))
@@ -284,7 +304,6 @@ class ComplotAdapter(Adapter):
         )
         approval_date = parse_date(self._field(fields, "תאריך אישור", "תאריך החלטה"))
         is_approved = issued or bool(approval_date and "אושר" in status_key)
-        detail_url = self._detail_url(request_number)
         mahut_nodes = document.xpath("//*[@id='mahut']")
         mahut = self._text(mahut_nodes[0]) if mahut_nodes else ""
         if mahut.startswith("מהות הבקשה"):
@@ -351,6 +370,10 @@ class ComplotAdapter(Adapter):
             request_number = clean_text(unit.payload.get("requestNumber"))
             markup = self.client.request("GET", self._detail_url(request_number)).text
             record = self._record_from_detail(request_number, markup, cached=unit.payload)
+            with self._tuning_lock:
+                self._range_counts["parsed_requests"] += 1
+                bucket = "before_range" if record.submission_date < date_from else "after_range" if record.submission_date > date_to else "in_range"
+                self._range_counts[bucket] += 1
             return [record] if in_range(record.submission_date, date_from, date_to) else []
 
         # Backward compatibility for runs created by the former street strategy.

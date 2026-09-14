@@ -20,6 +20,8 @@ def normalized_key(value: Any) -> str:
 def parse_date(value: Any) -> date | None:
     if value in (None, ""):
         return None
+    if isinstance(value, datetime):
+        return value.date()
     if isinstance(value, date):
         return value
     if isinstance(value, (int, float)):
@@ -28,10 +30,13 @@ def parse_date(value: Any) -> date | None:
             stamp /= 1000
         return datetime.fromtimestamp(stamp, tz=timezone.utc).date()
     text = clean_text(value)
-    match = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4})", text)
+    match = re.search(r"\b(\d{1,2})[./-](\d{1,2})[./-](\d{4})\b", text)
     if match:
         day, month, year = (int(part) for part in match.groups())
-        return date(year, month, day)
+        try:
+            return date(year, month, day)
+        except ValueError:
+            return None
     for candidate in (text[:10], text[:19]):
         try:
             return datetime.fromisoformat(candidate.replace("Z", "+00:00")).date()

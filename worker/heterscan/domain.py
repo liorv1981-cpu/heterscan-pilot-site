@@ -75,6 +75,10 @@ class ApplicationRecord:
 class AdapterReviewRequired(RuntimeError):
     """The public source blocked or challenged the request; no bypass is attempted."""
 
+    def __init__(self, message: str, *, diagnostics: dict | None = None):
+        super().__init__(message)
+        self.diagnostics = diagnostics or {}
+
 
 class AdapterRateLimited(RuntimeError):
     """The source asked the worker to pause before safely retrying the unit."""
