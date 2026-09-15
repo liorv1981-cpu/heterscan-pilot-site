@@ -172,7 +172,7 @@ function createSupabaseApi(client: SupabaseClient): PilotApi {
         applicationNumber: String(row.application_number ?? 'לא ידוע'),
         submissionDate: row.submission_date ? String(row.submission_date) : undefined,
         permitIssueDate: row.permit_issue_date ? String(row.permit_issue_date) : undefined,
-        permitNumber: String(row.permit_number || (row.is_permit_issued ? 'לא ידוע' : 'טרם הופק')),
+        permitNumber: String(row.permit_number || (row.is_permit_issued || row.details_available === false ? 'לא ידוע' : 'טרם הופק')),
         statusOriginal: String(row.display_status ?? 'טרם אושר'),
         sourceUrl: String(row.source_url), confidence: row.permit_confidence as Permit['confidence'],
         isPermitIssued: Boolean(row.is_permit_issued), isApproved: Boolean(row.is_approved),

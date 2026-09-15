@@ -1,5 +1,6 @@
 from datetime import date
 from unittest.mock import Mock
+import pytest
 
 from heterscan import runner
 
@@ -47,8 +48,13 @@ def test_cancellation_during_report_upload_wins_and_matches_workbook(monkeypatch
     assert repository.finalize_run.call_args.args[1]["status"] == "cancelled"
 
 
-def test_complete_worker_path_publishes_report_and_updates_only_owned_progress(monkeypatch):
-    from heterscan.domain import SearchUnit
+@pytest.mark.parametrize("summary_only", [False, True])
+def test_complete_worker_path_publishes_report_and_updates_only_owned_progress(monkeypatch, summary_only):
+    from heterscan.domain import AdapterReviewRequired, ApplicationRecord, SearchUnit
+    partial = ApplicationRecord(city_id="5000", application_number="20260001", address="public summary",
+                                source_url="https://example.test", source_reference="20260001",
+                                adapter_name="tel_aviv", adapter_version="test", raw_data={},
+                                submission_date=date(2026, 1, 4), details_available=False)
 
     repository = Mock()
     repository.get_run.return_value = {
@@ -63,21 +69,26 @@ def test_complete_worker_path_publishes_report_and_updates_only_owned_progress(m
     repository.cancellation_requested.return_value = False
     repository.finish_units.return_value = 1
     repository.update_owned_run.return_value = True
-    repository.progress_counts.return_value = {"units_completed": 1, "applications_found": 0, "permits_found": 0}
-    repository.progress_summary.return_value = {"units_requires_review": 0, "units_failed": 0}
-    repository.run_results.return_value = []
-    repository.run_units.return_value = [{"status": "completed"}]
+    repository.progress_counts.return_value = {"units_completed": 1, "applications_found": int(summary_only), "permits_found": 0}
+    repository.progress_summary.return_value = {"units_requires_review": int(summary_only), "units_failed": 0}
+    repository.run_results.return_value = [{"application_number": "20260001", "details_available": False}] if summary_only else []
+    repository.run_units.return_value = [{"status": "requires_review" if summary_only else "completed"}]
     repository.finalize_run.return_value = True
 
     class Adapter:
         name = "tel_aviv"
         def __init__(self, *_args): pass
-        def collect(self, *_args): return []
+        def collect(self, *_args):
+            if summary_only:
+                raise AdapterReviewRequired("restricted", partial_records=[partial])
+            return []
         def close(self): pass
 
     monkeypatch.setattr(runner, "SupabaseRepository", lambda: repository)
     monkeypatch.setattr(runner, "ADAPTERS", {"tel_aviv": Adapter})
     assert runner.run("run") == 0
-    assert repository.finalize_run.call_args.args[1]["status"] == "completed"
+    assert repository.finalize_run.call_args.args[1]["status"] == ("requires_review" if summary_only else "completed")
+    assert len(repository.save_applications.call_args.args[1]) == int(summary_only)
+    assert repository.finish_units.call_args.args[0][0]["result_count"] == int(summary_only)
     repository.update_owned_run.assert_called_once()
     repository.update_run.assert_not_called()

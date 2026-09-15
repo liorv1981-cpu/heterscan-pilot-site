@@ -7,7 +7,7 @@ from urllib.parse import urlencode
 
 from lxml import html
 
-from ..domain import AdapterReviewRequired, ApplicationRecord, DiscoveredUnit, DiscoveryResult, SearchUnit
+from ..domain import AdapterRateLimited, AdapterReviewRequired, ApplicationRecord, DiscoveredUnit, DiscoveryResult, SearchUnit
 from ..http import AdaptiveRateLimiter, PublicHttpClient
 from ..normalize import clean_text, in_range, normalized_key, parse_date
 from .base import Adapter
@@ -15,7 +15,7 @@ from .base import Adapter
 
 class ComplotAdapter(Adapter):
     name = "complot"
-    version = "0.2.2"
+    version = "0.3.0"
     autocomplete_url = "https://handasi.complot.co.il/wsComplotPublicData/ComplotPublicData.asmx/GetBakashot"
 
     def __init__(self, city_id: str, city_name: str, config: dict) -> None:
@@ -98,6 +98,23 @@ class ComplotAdapter(Adapter):
             }
         )
         return f"https://handasi.complot.co.il/magicscripts/mgrqispi.dll?{query}"
+
+    def _number_list_url(self, request_number: str) -> str:
+        query = urlencode({
+            "appname": "cixpa", "prgname": "GetBakashotByNumber", "siteid": self.config["site_id"],
+            "grp": "0", "t": "0", "b": request_number, "l": "true", "arguments": "siteId,grp,t,b,l",
+        })
+        return f"https://handasi.complot.co.il/magicscripts/mgrqispi.dll?{query}"
+
+    def _summary_source_url(self, request_number: str) -> str:
+        public_url = self.config.get("public_search_url")
+        if public_url:
+            return (f"{str(public_url).rstrip('/')}/#search/GetBakashotByNumber"
+                    f"&siteid={self.config['site_id']}&grp=0&t=0&b={request_number}"
+                    "&l=true&arguments=siteId,grp,t,b,l")
+        if str(self.config.get("site_id")) == "87":
+            return self._public_source_url(request_number)
+        return self._number_list_url(request_number)
 
     def _public_source_url(self, request_number: str) -> str:
         if str(self.config.get("site_id")) == "87":
@@ -375,13 +392,45 @@ class ComplotAdapter(Adapter):
             return self._discover_prefix(unit)
         if mode == "request":
             request_number = clean_text(unit.payload.get("requestNumber"))
-            markup = self.client.request("GET", self._detail_url(request_number)).text
-            record = self._record_from_detail(request_number, markup, cached=unit.payload)
+            summary_url = self._number_list_url(request_number)
+            summary_markup = self.client.request("GET", summary_url).text
+            matches = [row for row in self._list_rows(summary_markup) if row["request_number"] == request_number]
+            if len(matches) != 1:
+                raise AdapterReviewRequired("לא נמצא רישום פומבי חד־משמעי לבקשה בחיפוש העירוני.")
+            row = matches[0]
+            submitted = parse_date(row["submission_date"])
+            if submitted is None:
+                raise AdapterReviewRequired("חסר תאריך הגשה תקין בתוצאת החיפוש העירוני.")
             with self._tuning_lock:
                 self._range_counts["parsed_requests"] += 1
-                bucket = "before_range" if record.submission_date < date_from else "after_range" if record.submission_date > date_to else "in_range"
+                bucket = "before_range" if submitted < date_from else "after_range" if submitted > date_to else "in_range"
                 self._range_counts[bucket] += 1
-            return [record] if in_range(record.submission_date, date_from, date_to) else []
+            if not in_range(submitted, date_from, date_to):
+                return []
+            summary = ApplicationRecord(
+                city_id=self.city_id, application_number=request_number, address=row["address"] or None,
+                submission_date=submitted, building_file_number=row["building_file"] or None,
+                block_number=row["block"] or None, parcel_number=row["parcel"] or None,
+                source_url=self._summary_source_url(request_number), source_reference=request_number,
+                adapter_name=self.name, adapter_version=self.version,
+                raw_data={"public_summary": row, "details_available": False}, details_available=False,
+            )
+            try:
+                markup = self.client.request("GET", self._detail_url(request_number)).text
+                record = self._record_from_detail(request_number, markup, cached={
+                    **unit.payload, "submissionDate": row["submission_date"], "address": row["address"],
+                })
+                return [record] if in_range(record.submission_date, date_from, date_to) else []
+            except AdapterReviewRequired as error:
+                error.partial_records = [summary]
+                raise
+            except AdapterRateLimited:
+                raise
+            except RuntimeError as error:
+                raise AdapterReviewRequired(
+                    "פרטי הבקשה לא נטענו; נשמר המידע הפומבי מתוצאת החיפוש.",
+                    diagnostics={"detail_error": str(error)[:500]}, partial_records=[summary],
+                ) from error
 
         # Backward compatibility for runs created by the former street strategy.
         street_code = clean_text(unit.payload.get("streetCode"))

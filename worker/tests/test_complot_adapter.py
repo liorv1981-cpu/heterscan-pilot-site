@@ -38,6 +38,9 @@ class _SharedFakeClient:
                 data={"d": [{"label": f"{prefix}{index:0{remaining_digits}d}"} for index in range(10)]}
             )
         query = parse_qs(urlparse(url).query)
+        if query["prgname"] == ["GetBakashotByNumber"]:
+            number = query["b"][0]
+            return _Response(f'<table><tbody><tr><td></td><td><a href="javascript:getRequest({number})">{number}</a></td><td>F1</td><td>10/07/2025</td><td></td><td>רחוב הבדיקה 7</td><td>1</td><td>2</td></tr></tbody></table>')
         if query["prgname"] == ["GetBakashotByAddress"]:
             return _Response("""
               <table><tbody>
@@ -216,8 +219,9 @@ def test_direct_request_refresh_reads_latest_status_without_street_scan(monkeypa
     assert records[0].submission_date == date(2025, 7, 10)
     assert records[0].building_file_number == "F-20260843"
     assert records[0].permit_status_original == "היתר בתוקף"
-    assert len(_SharedFakeClient.instances[0].calls) == 1
-    assert "GetBakashaFile" in _SharedFakeClient.instances[0].calls[0]
+    assert len(_SharedFakeClient.instances[0].calls) == 2
+    assert "GetBakashotByNumber" in _SharedFakeClient.instances[0].calls[0]
+    assert "GetBakashaFile" in _SharedFakeClient.instances[0].calls[1]
 
 
 def test_seven_digit_prefix_does_not_repeat_complete_request_numbers(monkeypatch) -> None:

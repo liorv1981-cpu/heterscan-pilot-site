@@ -14,6 +14,8 @@ HEADER_FONT = Font(color="FFFFFF", bold=True)
 
 
 def _display_status(row: dict[str, Any]) -> str:
+    if row.get("details_available") is False:
+        return "פרטים חלקיים — נדרשת בדיקה"
     if row.get("is_permit_issued"):
         return row.get("permit_status_original") or "היתר הופק"
     if row.get("is_approved"):
@@ -104,7 +106,7 @@ def build_report(
             **row,
             "display_status": _display_status(row),
             "permit_number": row.get("permit_number")
-            or ("לא ידוע" if row.get("is_permit_issued") else "טרם הופק"),
+            or ("לא ידוע" if row.get("is_permit_issued") or row.get("details_available") is False else "טרם הופק"),
         }
         for row in results
     ]

@@ -62,14 +62,16 @@ def _collect_wave(adapter, units, date_from: date, date_to: date):
                         (unit, _records_in_requested_range(future.result(), date_from, date_to), None)
                     )
                 except Exception as error:
-                    collected.append((unit, None, error))
+                    partial = _records_in_requested_range(getattr(error, "partial_records", []), date_from, date_to)
+                    collected.append((unit, partial, error))
     else:
         unit = units[0]
         try:
             records = adapter.collect(unit, date_from, date_to)
             collected.append((unit, _records_in_requested_range(records, date_from, date_to), None))
         except Exception as error:
-            collected.append((unit, None, error))
+            partial = _records_in_requested_range(getattr(error, "partial_records", []), date_from, date_to)
+            collected.append((unit, partial, error))
     return collected
 
 
@@ -240,7 +242,8 @@ def run(run_id: str) -> int:
                     expanded.append((unit, result, collection_error))
             collected = expanded
 
-            successful = [(unit, records or []) for unit, records, error in collected if error is None]
+            successful = [(unit, records or []) for unit, records, error in collected
+                          if error is None or (isinstance(error, AdapterReviewRequired) and records)]
             all_records = [record for _, records in successful for record in records]
             persistence_errors: dict[str, Exception] = {}
             try:
@@ -261,7 +264,7 @@ def run(run_id: str) -> int:
             unit_updates = []
             failure_context = []
             for unit, records, collection_error in collected:
-                error = collection_error or persistence_errors.get(unit.id)
+                error = persistence_errors.get(unit.id) or collection_error
                 if error is None:
                     unit_updates.append(
                         {
@@ -277,7 +280,7 @@ def run(run_id: str) -> int:
                     {
                         "id": unit.id,
                         "status": "requires_review" if review else "failed",
-                        "result_count": 0,
+                        "result_count": len(records or []) if unit.id not in persistence_errors else 0,
                         "error_message": str(error)[:2000],
                     }
                 )

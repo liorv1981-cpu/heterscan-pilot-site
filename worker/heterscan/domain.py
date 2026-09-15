@@ -55,6 +55,7 @@ class ApplicationRecord:
     permit_status_original: str | None = None
     is_permit_issued: bool = False
     permit_confidence: Confidence | None = None
+    details_available: bool = True
     evidence: list[dict[str, Any]] = field(default_factory=list)
 
     def to_database(self, *, run_id: str, identity_key: str, content_hash: str) -> dict[str, Any]:
@@ -75,9 +76,11 @@ class ApplicationRecord:
 class AdapterReviewRequired(RuntimeError):
     """The public source blocked or challenged the request; no bypass is attempted."""
 
-    def __init__(self, message: str, *, diagnostics: dict | None = None):
+    def __init__(self, message: str, *, diagnostics: dict | None = None,
+                 partial_records: list[ApplicationRecord] | None = None):
         super().__init__(message)
         self.diagnostics = diagnostics or {}
+        self.partial_records = partial_records or []
 
 
 class AdapterRateLimited(RuntimeError):
