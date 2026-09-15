@@ -9,6 +9,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
+from .source_links import stable_source_url
+
 HEADER_FILL = PatternFill("solid", fgColor="123B70")
 HEADER_FONT = Font(color="FFFFFF", bold=True)
 
@@ -104,6 +106,7 @@ def build_report(
     report_results = [
         {
             **row,
+            "source_url": stable_source_url(row.get("source_url"), row.get("application_number")),
             "display_status": _display_status(row),
             "permit_number": row.get("permit_number")
             or ("לא ידוע" if row.get("is_permit_issued") or row.get("details_available") is False else "טרם הופק"),

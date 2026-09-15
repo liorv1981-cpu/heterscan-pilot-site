@@ -3,6 +3,7 @@ import type { City, Permit, PilotApi, Run, StartRunInput } from '../types'
 import { functionError } from './functionError'
 import { activeStatuses, isActiveRun } from './run'
 import { readAllPages } from './pagination'
+import { stableSourceUrl } from './sourceLinks'
 
 const citySeed: City[] = [
   { id: '3000', name: 'ירושלים' },
@@ -174,7 +175,7 @@ function createSupabaseApi(client: SupabaseClient): PilotApi {
         permitIssueDate: row.permit_issue_date ? String(row.permit_issue_date) : undefined,
         permitNumber: String(row.permit_number || (row.is_permit_issued || row.details_available === false ? 'לא ידוע' : 'טרם הופק')),
         statusOriginal: String(row.display_status ?? 'טרם אושר'),
-        sourceUrl: String(row.source_url), confidence: row.permit_confidence as Permit['confidence'],
+        sourceUrl: stableSourceUrl(row.source_url, row.application_number), confidence: row.permit_confidence as Permit['confidence'],
         isPermitIssued: Boolean(row.is_permit_issued), isApproved: Boolean(row.is_approved),
       }))
     },

@@ -5,11 +5,13 @@ from datetime import date
 from ..domain import ApplicationRecord, SearchUnit
 from ..http import PublicHttpClient
 from ..normalize import clean_text, in_range, parse_date
+from ..source_links import tel_aviv_source_url
 from .base import Adapter
 
 
 class TelAvivAdapter(Adapter):
     name = "tel_aviv"
+    version = "0.2.0"
     query_url = "https://gisn.tel-aviv.gov.il/ArcGIS/rest/services/IView2/MapServer/772/query"
     fields = ",".join(
         [
@@ -73,7 +75,7 @@ class TelAvivAdapter(Adapter):
                             permit_status_original=clean_text(attrs.get("request_stage")) or None,
                             is_permit_issued=issued,
                             permit_confidence="high" if issued else None,
-                            source_url=f"https://gisn.tel-aviv.gov.il/ArcGIS/rest/services/IView2/MapServer/772/{source_reference}",
+                            source_url=tel_aviv_source_url(request_number),
                             source_reference=source_reference,
                             adapter_name=self.name,
                             adapter_version=self.version,
