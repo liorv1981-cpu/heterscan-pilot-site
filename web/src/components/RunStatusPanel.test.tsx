@@ -66,8 +66,10 @@ describe('RunStatusPanel cancellation controls', () => {
   })
 
   it('does not treat a historical completed zero as verified', () => {
-    render(<RunStatusPanel run={{ ...activeRun, status: 'completed', applicationsFound: 0, permitsFound: 0 }} isStopping={false} onStop={vi.fn()} />)
+    const { container } = render(<RunStatusPanel run={{ ...activeRun, status: 'completed', applicationsFound: 0, permitsFound: 0 }} isStopping={false} onStop={vi.fn()} />)
     expect(screen.getByText(/תוצאת האפס לא אומתה עצמאית/)).toBeTruthy()
     expect(screen.getAllByText('היתרים שאומתו בהרצה').length).toBeGreaterThan(0)
+    expect(screen.getByText('הסריקה הושלמה — תוצאת האפס לא אומתה')).toBeTruthy()
+    expect(container.querySelector('.status-panel--warning')).toBeTruthy()
   })
 })

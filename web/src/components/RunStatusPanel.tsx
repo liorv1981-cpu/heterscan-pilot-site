@@ -21,21 +21,22 @@ const activeStatuses = new Set<Run['status']>(['created', 'dispatching', 'runnin
 export function RunStatusPanel({ run, isStopping, onStop }: RunStatusPanelProps) {
   const [confirmationFor, setConfirmationFor] = useState<string | null>(null)
   const isDone = run.status === 'completed'
+  const unverifiedZero = isDone && run.applicationsFound === 0 && run.coverageVerification !== 'verified_zero'
   const isFinished = ['completed', 'completed_with_errors', 'requires_review'].includes(run.status)
   const isActive = activeStatuses.has(run.status)
   const stopRequested = isActive && Boolean(run.cancelRequestedAt)
   const confirming = confirmationFor === run.id
-  const hasIssue = ['completed_with_errors', 'requires_review', 'failed', 'dispatch_failed', 'dispatch_timeout', 'cancelled'].includes(run.status)
+  const hasIssue = unverifiedZero || ['completed_with_errors', 'requires_review', 'failed', 'dispatch_failed', 'dispatch_timeout', 'cancelled'].includes(run.status)
   const completedUnits = isFinished ? run.unitsTotal : run.unitsCompleted
   const progress = isFinished ? 100 : run.unitsTotal ? Math.round((run.unitsCompleted / run.unitsTotal) * 100) : 0
-  const Icon = isDone ? CheckCircle2 : hasIssue ? CircleAlert : stopRequested ? CircleStop : LoaderCircle
+  const Icon = hasIssue ? CircleAlert : isDone ? CheckCircle2 : stopRequested ? CircleStop : LoaderCircle
 
   return (
     <section className={`status-panel ${hasIssue ? 'status-panel--warning' : ''}`} aria-labelledby="run-status-heading">
       <div className="status-main">
         <h2 id="run-status-heading">סטטוס ההרצה</h2>
-        <p className={isDone ? 'status-success' : hasIssue ? 'status-warning' : 'status-running'}>
-          <Icon size={20} className={!isDone && !hasIssue && !stopRequested ? 'spin' : ''} /> {stopRequested ? 'בקשת העצירה התקבלה' : statusCopy[run.status]}
+        <p className={hasIssue ? 'status-warning' : isDone ? 'status-success' : 'status-running'}>
+          <Icon size={20} className={!isDone && !hasIssue && !stopRequested ? 'spin' : ''} /> {stopRequested ? 'בקשת העצירה התקבלה' : unverifiedZero ? 'הסריקה הושלמה — תוצאת האפס לא אומתה' : statusCopy[run.status]}
         </p>
       </div>
       <dl className="status-metrics">
