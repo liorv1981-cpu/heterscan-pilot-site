@@ -20,13 +20,13 @@ export function PermitsTable({ run, permits, loading = false, error, downloading
   const issuedCount = permits.filter((result) => result.isPermitIssued).length
   const hideEmptyTable = isPartial && permits.length === 0
   const emptyMessage = run?.status === 'completed'
-    ? 'לא נמצאו בקשות או היתרים בטווח שנבחר.'
+    ? run.coverageVerification === 'verified_zero' ? 'לא נמצאו בקשות בטווח שנבחר; תוצאת האפס אומתה.' : 'לא נמצאו בקשות בהרצה; תוצאת האפס לא אומתה עצמאית.'
     : run?.status === 'cancelled' ? 'עד לעצירת הסריקה לא נמצאו בקשות או היתרים.'
       : 'לא נמצאו תוצאות בחלק שנבדק. יש לעיין בסטטוס ובדוח לפני הסקת מסקנות.'
   return (
     <section className="results-section" aria-labelledby="results-heading" aria-busy={loading}>
       <div className="section-heading-row">
-        <div><h2 id="results-heading">בקשות והיתרים שנמצאו</h2><p>{loading ? 'טוען תוצאות…' : error ? 'טעינת התוצאות לא הושלמה.' : hasFinished ? `${permits.length} בקשות, מתוכן ${issuedCount} היתרים שהופקו${isPartial ? ' — תוצאות חלקיות; יש לעיין בסטטוס ובדוח' : ''}` : 'התוצאות יוצגו כאן בסיום הסריקה'}</p></div>
+        <div><h2 id="results-heading">בקשות והיתרים שנמצאו</h2><p>{loading ? 'טוען תוצאות…' : error ? 'טעינת התוצאות לא הושלמה.' : hasFinished ? `${permits.length} בקשות שנמצאו, ${issuedCount} ${issuedCount === 1 ? 'היתר שאומת' : 'היתרים שאומתו'} בהרצה${isPartial ? ' — תוצאות חלקיות; יש לעיין בסטטוס ובדוח' : ''}` : 'התוצאות יוצגו כאן בסיום הסריקה'}</p></div>
         <button className="outline-button" type="button" disabled={!reportReady || downloading} onClick={() => void onDownload()}>
           <ArrowDownToLine size={18} /> {downloading ? 'מכין הורדה…' : isPartial ? 'הורדת Excel חלקי' : 'הורדת Excel'}
         </button>

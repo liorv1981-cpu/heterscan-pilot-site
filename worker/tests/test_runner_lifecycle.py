@@ -70,7 +70,7 @@ def test_complete_worker_path_publishes_report_and_updates_only_owned_progress(m
     repository.finish_units.return_value = 1
     repository.update_owned_run.return_value = True
     repository.progress_counts.return_value = {"units_completed": 1, "applications_found": int(summary_only), "permits_found": 0}
-    repository.progress_summary.return_value = {"units_requires_review": int(summary_only), "units_failed": 0}
+    repository.progress_summary.return_value = {"units_requires_review": int(summary_only), "units_failed": 0, "applications_found": int(summary_only)}
     repository.run_results.return_value = [{"application_number": "20260001", "details_available": False}] if summary_only else []
     repository.run_units.return_value = [{"status": "requires_review" if summary_only else "completed"}]
     repository.finalize_run.return_value = True
@@ -87,7 +87,8 @@ def test_complete_worker_path_publishes_report_and_updates_only_owned_progress(m
     monkeypatch.setattr(runner, "SupabaseRepository", lambda: repository)
     monkeypatch.setattr(runner, "ADAPTERS", {"tel_aviv": Adapter})
     assert runner.run("run") == 0
-    assert repository.finalize_run.call_args.args[1]["status"] == ("requires_review" if summary_only else "completed")
+    assert repository.finalize_run.call_args.args[1]["status"] == "requires_review"
+    assert repository.finalize_run.call_args.args[1]["coverage_verification"] == ("partial" if summary_only else "zero_not_verified")
     assert len(repository.save_applications.call_args.args[1]) == int(summary_only)
     assert repository.finish_units.call_args.args[0][0]["result_count"] == int(summary_only)
     repository.update_owned_run.assert_called_once()

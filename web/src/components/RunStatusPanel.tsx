@@ -47,7 +47,7 @@ export function RunStatusPanel({ run, isStopping, onStop }: RunStatusPanelProps)
           </span>
         </dd></div>
         <div><dt>נמצאו בקשות</dt><dd>{run.applicationsFound.toLocaleString('he-IL')}</dd></div>
-        <div><dt>נמצאו היתרים</dt><dd>{run.permitsFound.toLocaleString('he-IL')}</dd></div>
+        <div><dt>היתרים שאומתו בהרצה</dt><dd>{run.permitsFound.toLocaleString('he-IL')}</dd></div>
         <div><dt>זמן התחלה</dt><dd>{formatDate(run.startedAt)}</dd></div>
         <div><dt>משך זמן</dt><dd dir="ltr">{formatDuration(run.startedAt, run.completedAt)}</dd></div>
       </dl>
@@ -76,7 +76,9 @@ export function RunStatusPanel({ run, isStopping, onStop }: RunStatusPanelProps)
           )}
         </div>
       ) : null}
-      {isDone && run.applicationsFound === 0 ? <p className="status-note">הסריקה הסתיימה בהצלחה, אך לא נמצאו בקשות או היתרים בטווח התאריכים שנבחר.</p> : null}
+      {isDone && run.applicationsFound === 0 ? <p className="status-note">{run.coverageVerification === 'verified_zero' ? 'תוצאת האפס אומתה מול מקור עצמאי.' : 'לא נמצאו בקשות בהרצה. תוצאת האפס לא אומתה עצמאית, ואין להסיק מכך שאין בקשות בטווח.'}</p> : null}
+      {isDone && run.applicationsFound > 0 && run.coverageVerification !== 'verified_nonzero' ? <p className="status-note">השלמת הסריקה היא מצב טכני; כיסוי המקור וקבלת העיר נבדקים בנפרד.</p> : null}
+      {isFinished && run.applicationsFound > 0 && run.permitsFound === 0 ? <p className="status-note">לא אומתו היתרים בהרצה. מצב ההיתר של בקשות שלא אומתו במלואן אינו ידוע.</p> : null}
       {['requires_review', 'completed_with_errors'].includes(run.status) ? <p className="status-note">חלק מבדיקות המקור לא הושלמו בהצלחה. {run.applicationsFound === 0 ? 'לא נמצאו תוצאות בחלק שנבדק; אין בכך אישור שאין בקשות בטווח.' : 'התוצאות שנאספו זמינות למטה.'} פרטי הבדיקות מופיעים בדוח.</p> : null}
       {run.status === 'cancelled' ? <p className="status-note">הסריקה נעצרה מיד וניתן להתחיל סריקה חדשה. {run.applicationsFound > 0 ? 'התוצאות שנמצאו עד העצירה מוצגות למטה' : 'עד העצירה לא נמצאו תוצאות'}{run.reportPath ? ', והדוח החלקי מוכן להורדה.' : '; הדוח החלקי מושלם ברקע.'}</p> : null}
       {run.errorMessage ? <p className="status-error" role="alert">{run.errorMessage}</p> : null}

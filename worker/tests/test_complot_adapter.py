@@ -1,11 +1,9 @@
 from datetime import date
 from urllib.parse import parse_qs, urlparse
 
-import pytest
-
 from heterscan.adapters import complot as complot_module
 from heterscan.adapters.complot import ComplotAdapter
-from heterscan.domain import AdapterReviewRequired, DiscoveryResult, SearchUnit
+from heterscan.domain import DiscoveryResult, SearchUnit
 
 
 class _Response:
@@ -114,6 +112,17 @@ def test_yavne_records_link_to_the_public_search_result() -> None:
     )
 
 
+def test_eilat_records_link_to_the_public_search_result() -> None:
+    adapter = ComplotAdapter("2600", "אילת", {
+        "site_id": "56", "public_search_url": "https://eilat.complot.co.il/iturbakashot/",
+    })
+    assert adapter._public_source_url("20260001") == (
+        "https://eilat.complot.co.il/iturbakashot/"
+        "#search/GetBakashotByNumber&siteid=56&grp=0&t=0"
+        "&b=20260001&l=true&arguments=siteId,grp,t,b,l"
+    )
+
+
 def test_full_discovery_prefix_creates_requests_and_durable_child_prefixes(monkeypatch) -> None:
     _SharedFakeClient.instances.clear()
     monkeypatch.setattr(complot_module, "PublicHttpClient", _SharedFakeClient)
@@ -158,7 +167,7 @@ def test_ten_digit_request_numbers_are_discovered_when_configured(monkeypatch) -
     assert len(result.units) == 20
 
 
-def test_unexpected_request_number_length_requires_review(monkeypatch) -> None:
+def test_unexpected_request_number_length_preserves_candidates_and_requires_review(monkeypatch) -> None:
     _TenDigitFakeClient.instances.clear()
     monkeypatch.setattr(complot_module, "PublicHttpClient", _TenDigitFakeClient)
     adapter = ComplotAdapter("4000", "חיפה", {"site_id": "16", "request_number_length": 8})
@@ -170,8 +179,30 @@ def test_unexpected_request_number_length_requires_review(monkeypatch) -> None:
         payload={"mode": "discover-prefix", "prefix": "2026", "year": "2026"},
     )
 
-    with pytest.raises(AdapterReviewRequired, match="הוגדר 8, התקבל 10"):
-        adapter.collect(unit, date(2026, 1, 1), date(2026, 12, 31))
+    result = adapter.collect(unit, date(2026, 1, 1), date(2026, 12, 31))
+    assert isinstance(result, DiscoveryResult)
+    assert "הוגדר 8, התקבל 10" in result.review_reason
+    assert result.units[0].unit_key == "request:2026000000"
+    assert len([item for item in result.units if item.unit_key.startswith("request:")]) == 10
+
+
+def test_mixed_number_lengths_do_not_discard_valid_siblings(monkeypatch) -> None:
+    class MixedClient(_SharedFakeClient):
+        instances = []
+
+        def request(self, _method, url, **_kwargs):
+            return _Response(data={"d": [
+                {"label": "20260005"}, {"label": "2026183325"}, {"label": "20260006"},
+            ]})
+
+    monkeypatch.setattr(complot_module, "PublicHttpClient", MixedClient)
+    adapter = ComplotAdapter("1200", "מודיעין", {"site_id": "82", "request_number_length": 8})
+    unit = SearchUnit("u", "r", 1, "discover-prefix:2026", {"mode": "discover-prefix", "prefix": "2026", "year": "2026"})
+    result = adapter.collect(unit, date(2026, 1, 1), date(2026, 1, 31))
+    assert [item.unit_key for item in result.units] == [
+        "request:20260005", "request:2026183325", "request:20260006",
+    ]
+    assert result.review_reason
 
 
 def test_shorter_autocomplete_hints_continue_prefix_discovery(monkeypatch) -> None:

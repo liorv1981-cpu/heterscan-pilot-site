@@ -28,6 +28,23 @@ def _claim_limit(adapter_name: str) -> int:
     return 20 if adapter_name in ("jerusalem", "complot") else 1
 
 
+def _final_status(summary: dict[str, int]) -> str:
+    """An unverified empty result can never be published as a successful zero."""
+    if summary["units_requires_review"] or summary["applications_found"] == 0:
+        return "requires_review"
+    if summary["units_failed"]:
+        return "completed_with_errors"
+    return "completed"
+
+
+def _coverage_verification(final_status: str, result_count: int) -> str:
+    if final_status not in {"completed", "requires_review", "completed_with_errors"}:
+        return "partial"
+    if result_count == 0:
+        return "zero_not_verified"
+    return "partial" if final_status != "completed" else "not_verified"
+
+
 def _parallelism(adapter) -> int:
     if adapter.name == "jerusalem":
         return 8
@@ -75,6 +92,13 @@ def _collect_wave(adapter, units, date_from: date, date_to: date):
     return collected
 
 
+def _expand_discovery(repository, run_id: str, unit, result: DiscoveryResult):
+    """Queue observable candidates before recording uncertainty in their discovery."""
+    inserted = repository.enqueue_units(run_id, result.units)
+    review = AdapterReviewRequired(result.review_reason) if result.review_reason else None
+    return inserted, (unit, [], review)
+
+
 def _wait_for_source_cooldown(
     repository: SupabaseRepository,
     run_id: str,
@@ -109,7 +133,8 @@ def _finalize_report(
     current = repository.get_run(run_id)
     if current["status"] == "cancelled" or current.get("cancel_requested_at"):
         final_status = "cancelled"
-    report_run = {**current, "status": final_status}
+    coverage_verification = _coverage_verification(final_status, len(results))
+    report_run = {**current, "status": final_status, "coverage_verification": coverage_verification}
     report_bytes, checksum = build_report(report_run, results, units)
     storage_path = f"{run_id}/HETERSCAN_{city_id}_{date_from}_{date_to}_{run_id}.xlsx"
     repository.upload_report(storage_path, report_bytes)
@@ -120,6 +145,7 @@ def _finalize_report(
         {
             **counts,
             "status": final_status,
+            "coverage_verification": coverage_verification,
             "report_path": storage_path,
             "completed_at": _iso_now(),
             "heartbeat_at": _iso_now(),
@@ -234,8 +260,9 @@ def run(run_id: str) -> int:
             for unit, result, collection_error in collected:
                 if collection_error is None and isinstance(result, DiscoveryResult):
                     try:
-                        discovered_units += repository.enqueue_units(run_id, result.units)
-                        expanded.append((unit, [], None))
+                        inserted, expanded_result = _expand_discovery(repository, run_id, unit, result)
+                        discovered_units += inserted
+                        expanded.append(expanded_result)
                     except Exception as expansion_error:
                         expanded.append((unit, None, expansion_error))
                 else:
@@ -380,13 +407,7 @@ def run(run_id: str) -> int:
             return 75
 
         summary = repository.progress_summary(run_id)
-        final_status = (
-            "requires_review"
-            if summary["units_requires_review"]
-            else "completed_with_errors"
-            if summary["units_failed"]
-            else "completed"
-        )
+        final_status = _final_status(summary)
         return _finalize_report(repository, run_id, city["id"], date_from, date_to, final_status)
     except Exception as error:
         try:

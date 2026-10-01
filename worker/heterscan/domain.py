@@ -27,6 +27,7 @@ class DiscoveryResult:
     """Durable child work discovered by a source lookup unit."""
 
     units: list[DiscoveredUnit]
+    review_reason: str | None = None
 
 
 @dataclass(slots=True)
@@ -69,6 +70,7 @@ class ApplicationRecord:
             content_hash=content_hash,
             last_run_id=run_id,
             last_seen_at=datetime.now(timezone.utc).isoformat(),
+            permit_verification="verified_issued" if self.is_permit_issued else "unknown",
         )
         return data
 

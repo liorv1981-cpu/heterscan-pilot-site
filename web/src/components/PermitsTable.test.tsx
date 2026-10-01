@@ -31,7 +31,7 @@ describe('PermitsTable', () => {
     render(<PermitsTable run={run} permits={results} onDownload={vi.fn()} />)
 
     expect(screen.getByRole('heading', { name: 'בקשות והיתרים שנמצאו' })).toBeInTheDocument()
-    expect(screen.getByText('2 בקשות, מתוכן 1 היתרים שהופקו')).toBeInTheDocument()
+    expect(screen.getByText('2 בקשות שנמצאו, 1 היתר שאומת בהרצה')).toBeInTheDocument()
     expect(screen.getByText('טרם אושר')).toBeInTheDocument()
     expect(screen.getByText('טרם הופק')).toBeInTheDocument()
     expect(screen.getByText('01.12.2025')).toBeInTheDocument()

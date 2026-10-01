@@ -44,6 +44,7 @@ def test_unavailable_detail_retains_only_public_summary_and_requires_review(monk
         assert rows[0].permit_number is None and not rows[0].is_permit_issued
         assert "GetBakashotByNumber" in rows[0].source_url
         record = rows[0].to_database(run_id="r", identity_key="a", content_hash="h")
+        assert record["permit_verification"] == "unknown"
         payload, _ = build_report({"city_name": "רחובות", "date_from": "2026-01-01", "date_to": "2026-01-31", "status": "requires_review"}, [record], [])
         sheet = load_workbook(BytesIO(payload))["בקשות והיתרים"]
         assert sheet["J2"].value == "לא ידוע"

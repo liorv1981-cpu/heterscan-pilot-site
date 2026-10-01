@@ -144,7 +144,7 @@ describe('RunForm date display', () => {
       <RunForm
         cities={[{ id: '7900', name: 'פתח תקווה' }]}
         disabled={false}
-        displayedRun={null}
+        displayedRun={{ ...displayedRun, dateFrom: '2026-08-15', dateTo: '2026-08-31' }}
         onSubmit={vi.fn()}
         onReset={vi.fn()}
       />,

@@ -36,8 +36,8 @@ def test_report_includes_pending_applications_with_source_link() -> None:
     headers = {cell.value: cell.column for cell in sheet[1]}
 
     assert sheet.max_row == 3
-    assert sheet.cell(3, headers["סטטוס"]).value == "טרם אושר"
-    assert sheet.cell(3, headers["מספר היתר"]).value == "טרם הופק"
+    assert sheet.cell(3, headers["סטטוס"]).value == "סטטוס לא אומת"
+    assert sheet.cell(3, headers["מספר היתר"]).value == "לא ידוע"
     source_cell = sheet.cell(3, headers["קישור מקור"])
     assert source_cell.value == "https://example.test/pending"
     assert source_cell.hyperlink.target == "https://example.test/pending"
@@ -51,8 +51,15 @@ def test_approved_without_permit_stays_separate_from_issued() -> None:
     workbook = load_workbook(BytesIO(payload))
     assert workbook["בקשות שאושרו"].max_row == 2
     assert workbook["היתרים שנמצאו"].max_row == 1
-    assert workbook["בקשות והיתרים"]["J2"].value == "טרם הופק"
-    assert workbook["בקשות והיתרים"]["L2"].value == "אושר — טרם הופק היתר"
+    assert workbook["בקשות והיתרים"]["J2"].value == "לא ידוע"
+    assert workbook["בקשות והיתרים"]["L2"].value == "אושר — מצב היתר לא אומת"
+
+
+def test_zero_report_explicitly_says_zero_is_not_verified() -> None:
+    run = {"city_name": "חולון", "date_from": "2026-01-01", "date_to": "2026-01-31", "status": "requires_review"}
+    payload, _ = build_report(run, [], [])
+    sheet = load_workbook(BytesIO(payload))["סיכום"]
+    assert "אפס לא אומת" in [cell.value for cell in sheet[2]]
 
 
 def test_source_text_cannot_become_an_excel_formula() -> None:

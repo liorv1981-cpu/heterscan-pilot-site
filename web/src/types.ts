@@ -31,6 +31,7 @@ export interface Run {
   unitsCompleted: number
   permitsFound: number
   applicationsFound: number
+  coverageVerification?: 'not_verified' | 'zero_not_verified' | 'partial' | 'verified_zero' | 'verified_nonzero'
   reportPath?: string
   errorMessage?: string
 }
@@ -49,6 +50,7 @@ export interface Permit {
   confidence?: 'high' | 'medium' | 'low'
   isPermitIssued: boolean
   isApproved: boolean
+  permitVerification?: 'unknown' | 'verified_issued' | 'verified_not_issued'
 }
 
 export interface StartRunInput {

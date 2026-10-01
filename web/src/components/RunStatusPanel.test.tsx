@@ -64,4 +64,10 @@ describe('RunStatusPanel cancellation controls', () => {
     expect(screen.queryByText(/הסריקה הסתיימה בהצלחה/)).toBeNull()
     expect(screen.getByText(/אין בכך אישור שאין בקשות בטווח/)).toBeTruthy()
   })
+
+  it('does not treat a historical completed zero as verified', () => {
+    render(<RunStatusPanel run={{ ...activeRun, status: 'completed', applicationsFound: 0, permitsFound: 0 }} isStopping={false} onStop={vi.fn()} />)
+    expect(screen.getByText(/תוצאת האפס לא אומתה עצמאית/)).toBeTruthy()
+    expect(screen.getAllByText('היתרים שאומתו בהרצה').length).toBeGreaterThan(0)
+  })
 })

@@ -21,8 +21,8 @@ def _display_status(row: dict[str, Any]) -> str:
     if row.get("is_permit_issued"):
         return row.get("permit_status_original") or "היתר הופק"
     if row.get("is_approved"):
-        return "אושר — טרם הופק היתר"
-    return "טרם אושר"
+        return row.get("permit_status_original") or "אושר — מצב היתר לא אומת"
+    return row.get("permit_status_original") or "סטטוס לא אומת"
 
 
 def _display(value: Any) -> Any:
@@ -76,6 +76,9 @@ def build_report(
 ) -> tuple[bytes, str]:
     workbook = Workbook()
     workbook.remove(workbook.active)
+    coverage_status = run.get("coverage_verification") or (
+        "zero_not_verified" if not results else "not_verified"
+    )
     summary = [
         {
             "city_name": run["city_name"],
@@ -84,6 +87,13 @@ def build_report(
             "status": run["status"],
             "applications_found": len(results),
             "permits_found": sum(bool(row.get("is_permit_issued")) for row in results),
+            "coverage_verification": {
+                "verified_zero": "אפס אומת",
+                "verified_nonzero": "כיסוי אומת",
+                "zero_not_verified": "אפס לא אומת",
+                "partial": "כיסוי חלקי — נדרשת בדיקה",
+            }.get(coverage_status, "כיסוי טרם אומת בעת הפקת הדוח"),
+            "permit_count_meaning": "נספרו רק היתרים שאומתו; היתר שלא אומת אינו היתר שלא הופק",
             "units_total": len(units),
             "units_completed": sum(row["status"] == "completed" for row in units),
         }
@@ -99,6 +109,8 @@ def build_report(
             ("status", "סטטוס"),
             ("applications_found", "בקשות שנמצאו"),
             ("permits_found", "היתרים שנמצאו"),
+            ("coverage_verification", "אימות כיסוי"),
+            ("permit_count_meaning", "משמעות ספירת היתרים"),
             ("units_total", "יחידות חיפוש"),
             ("units_completed", "יחידות שהושלמו"),
         ],
@@ -108,8 +120,7 @@ def build_report(
             **row,
             "source_url": stable_source_url(row.get("source_url"), row.get("application_number")),
             "display_status": _display_status(row),
-            "permit_number": row.get("permit_number")
-            or ("לא ידוע" if row.get("is_permit_issued") or row.get("details_available") is False else "טרם הופק"),
+            "permit_number": row.get("permit_number") or "לא ידוע",
         }
         for row in results
     ]

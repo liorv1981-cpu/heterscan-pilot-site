@@ -116,6 +116,7 @@ function mapRun(row: Record<string, unknown>): Run {
     cancelRequestedAt: row.cancel_requested_at ? String(row.cancel_requested_at) : undefined,
     unitsTotal: Number(row.units_total ?? 0), unitsCompleted: Number(row.units_completed ?? 0),
     permitsFound: Number(row.permits_found ?? 0), applicationsFound: Number(row.applications_found ?? 0),
+    coverageVerification: row.coverage_verification as Run['coverageVerification'],
     reportPath: row.report_path ? String(row.report_path) : undefined,
     errorMessage: row.error_message ? String(row.error_message) : undefined,
   }
@@ -173,10 +174,15 @@ function createSupabaseApi(client: SupabaseClient): PilotApi {
         applicationNumber: String(row.application_number ?? 'לא ידוע'),
         submissionDate: row.submission_date ? String(row.submission_date) : undefined,
         permitIssueDate: row.permit_issue_date ? String(row.permit_issue_date) : undefined,
-        permitNumber: String(row.permit_number || (row.is_permit_issued || row.details_available === false ? 'לא ידוע' : 'טרם הופק')),
-        statusOriginal: String(row.display_status ?? 'טרם אושר'),
+        permitNumber: String(row.permit_number || 'לא ידוע'),
+        statusOriginal: String(
+          row.details_available === false ? 'פרטים חלקיים — נדרשת בדיקה'
+            : row.is_permit_issued ? (row.display_status ?? 'היתר הופק')
+              : (row.permit_status_original || (row.is_approved ? 'אושר — מצב היתר לא אומת' : 'סטטוס לא אומת')),
+        ),
         sourceUrl: stableSourceUrl(row.source_url, row.application_number), confidence: row.permit_confidence as Permit['confidence'],
         isPermitIssued: Boolean(row.is_permit_issued), isApproved: Boolean(row.is_approved),
+        permitVerification: (row.permit_verification ?? 'unknown') as Permit['permitVerification'],
       }))
     },
     async downloadReport(run) {

@@ -117,6 +117,8 @@ class ComplotAdapter(Adapter):
         return self._number_list_url(request_number)
 
     def _public_source_url(self, request_number: str) -> str:
+        if self.config.get("public_search_url"):
+            return self._summary_source_url(request_number)
         if str(self.config.get("site_id")) == "87":
             return (
                 "https://yavne.complot.co.il/iturbakashot2/"
@@ -216,8 +218,10 @@ class ComplotAdapter(Adapter):
         if not isinstance(data, dict) or not isinstance(data.get("d"), list):
             raise AdapterReviewRequired("מבנה תשובת החיפוש אינו תקין; לא ניתן להסיק שאין בקשות.")
         items = data["d"]
-        if any(not isinstance(item, dict) or not clean_text(item.get("label")).isdigit() for item in items):
-            raise AdapterReviewRequired("תשובת החיפוש מכילה מזהי בקשה שלא ניתן לפענח.")
+        invalid_labels = any(
+            not isinstance(item, dict) or not clean_text(item.get("label")).isdigit()
+            for item in items
+        )
         labels = list(
             dict.fromkeys(
                 clean_text(item.get("label"))
@@ -226,16 +230,21 @@ class ComplotAdapter(Adapter):
             )
         )
         too_long_lengths = sorted({len(number) for number in labels if len(number) > request_number_length})
+        issues = []
+        if invalid_labels:
+            issues.append("תשובת החיפוש מכילה מזהי בקשה שלא ניתן לפענח")
         if too_long_lengths:
             observed = ", ".join(str(length) for length in too_long_lengths)
-            raise AdapterReviewRequired(
+            issues.append(
                 "אורך מספר הבקשה שהוגדר לרשות אינו תואם למקור: "
-                f"הוגדר {request_number_length}, התקבל {observed}."
+                f"הוגדר {request_number_length}, התקבל {observed}"
             )
         request_labels = [
             number
             for number in labels
-            if len(number) == request_number_length and number.startswith(year)
+            if len(number) >= request_number_length
+            and number.startswith(year)
+            and number.startswith(prefix)
         ]
         units = [
             DiscoveredUnit(
@@ -270,11 +279,11 @@ class ComplotAdapter(Adapter):
         )
         if labels and not request_labels and not child_prefixes:
             observed = ", ".join(str(length) for length in sorted({len(number) for number in labels}))
-            raise AdapterReviewRequired(
+            issues.append(
                 "לא ניתן לזהות מספרי בקשה באורך שהוגדר לרשות: "
-                f"הוגדר {request_number_length}, התקבל {observed}."
+                f"הוגדר {request_number_length}, התקבל {observed}"
             )
-        return DiscoveryResult(units=units)
+        return DiscoveryResult(units=units, review_reason="; ".join(issues) or None)
 
     def _record_from_detail(
         self, request_number: str, markup: str, *, cached: dict | None = None
