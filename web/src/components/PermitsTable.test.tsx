@@ -50,6 +50,16 @@ describe('PermitsTable', () => {
     expect(screen.getByRole('button', { name: 'הורדת Excel חלקי' })).toBeEnabled()
   })
 
+  it('labels an old completed zero as a partial unverified result', () => {
+    const { container, getByText } = render(
+      <PermitsTable run={{ ...run, applicationsFound: 0, permitsFound: 0, coverageVerification: 'zero_not_verified' }} permits={[]} onDownload={vi.fn()} />,
+    )
+    expect(container.querySelector('table')).toBeNull()
+    expect(getByText(/תוצאת האפס לא אומתה עצמאית/)).toBeInTheDocument()
+    expect(container.querySelector('button')).toHaveTextContent('הורדת Excel חלקי')
+    expect(container.querySelector('button')).toBeEnabled()
+  })
+
   it('opens Yavne requests through the public search route instead of the session-bound source URL', () => {
     const yavneResult: Permit = {
       ...results[0],

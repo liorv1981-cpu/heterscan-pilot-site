@@ -16,7 +16,10 @@ interface PermitsTableProps {
 export function PermitsTable({ run, permits, loading = false, error, downloading = false, onRetry, onDownload }: PermitsTableProps) {
   const hasFinished = Boolean(run && ['completed', 'completed_with_errors', 'requires_review', 'cancelled', 'failed', 'dispatch_failed', 'dispatch_timeout'].includes(run.status))
   const reportReady = Boolean(hasFinished && run?.reportPath)
-  const isPartial = Boolean(run && ['cancelled', 'failed', 'dispatch_failed', 'dispatch_timeout', 'requires_review', 'completed_with_errors'].includes(run.status))
+  const isPartial = Boolean(run && (
+    ['cancelled', 'failed', 'dispatch_failed', 'dispatch_timeout', 'requires_review', 'completed_with_errors'].includes(run.status)
+    || (run.applicationsFound === 0 && run.coverageVerification !== 'verified_zero')
+  ))
   const issuedCount = permits.filter((result) => result.isPermitIssued).length
   const hideEmptyTable = isPartial && permits.length === 0
   const emptyMessage = run?.status === 'completed'
