@@ -234,13 +234,18 @@ def run(run_id: str) -> int:
         adapter_class = ADAPTERS.get(city["adapter_name"])
         if not adapter_class:
             raise RuntimeError(f"Unknown adapter {city['adapter_name']}")
-        adapter = adapter_class(city["id"], city["name_he"], city.get("adapter_config") or {})
+        adapter_config = city.get("adapter_config") or {}
+        adapter = (adapter_class(city["id"], city["name_he"], adapter_config, coordinator=repository)
+                   if city["adapter_name"] == "complot"
+                   else adapter_class(city["id"], city["name_he"], adapter_config))
         date_from, date_to = _parse_date(run_row["date_from"]), _parse_date(run_row["date_to"])
         repository.log(run_id, "info", "worker_started", {"worker_id": worker_id, "adapter": adapter.name})
 
         if repository.cancellation_requested(run_id):
             return _finalize_report(repository, run_id, city["id"], date_from, date_to, "cancelled")
 
+        rate_limited_windows = 0
+        finalized_since_cooldown = 0
         while time.monotonic() - started < max_seconds:
             if repository.cancellation_requested(run_id):
                 return _finalize_report(repository, run_id, city["id"], date_from, date_to, "cancelled")
@@ -251,6 +256,7 @@ def run(run_id: str) -> int:
             unprocessed = list(units)
             cancel_after_batch = False
             cooldown_after_batch = 0.0
+            rate_limit_details = []
             batch_started = time.monotonic()
             while unprocessed:
                 workers = min(len(unprocessed), _parallelism(adapter))
@@ -274,6 +280,12 @@ def run(run_id: str) -> int:
                         units=len(wave),
                     )
                 if rate_limited:
+                    rate_limit_details.extend({
+                        "origin": error.origin,
+                        "endpoint": error.endpoint,
+                        "retry_after_kind": error.retry_after_kind,
+                        "retry_after_seconds": round(error.retry_after_seconds, 2),
+                    } for _, error in rate_limited)
                     released = [unit.id for unit, _ in rate_limited] + [unit.id for unit in unprocessed]
                     repository.release_units(released)
                     cooldown_after_batch = max(error.retry_after_seconds for _, error in rate_limited)
@@ -284,6 +296,8 @@ def run(run_id: str) -> int:
                         {
                             "released_units": len(released),
                             "retry_after_seconds": round(cooldown_after_batch, 1),
+                            "origin": "handasi.complot.co.il" if adapter.name == "complot" else None,
+                            "responses": rate_limit_details,
                         },
                     )
                     unprocessed = []
@@ -380,6 +394,7 @@ def run(run_id: str) -> int:
                     "unit_batch_failures",
                     {"failures": failure_context},
                 )
+            finalized_since_cooldown += len(unit_updates)
             counts = repository.progress_counts(run_id)
             still_owned = repository.update_owned_run(
                 run_id,
@@ -409,6 +424,7 @@ def run(run_id: str) -> int:
                     "processed_units": len(collected),
                     "discovered_units": discovered_units,
                     "records": len(all_records),
+                    "finalized_since_previous_cooldown": finalized_since_cooldown,
                     "elapsed_seconds": round(time.monotonic() - batch_started, 3),
                     **performance,
                 },
@@ -416,9 +432,22 @@ def run(run_id: str) -> int:
 
             if cancel_after_batch or repository.cancellation_requested(run_id):
                 return _finalize_report(repository, run_id, city["id"], date_from, date_to, "cancelled")
-            if cooldown_after_batch:
+            if rate_limit_details:
+                rate_limited_windows = 0 if unit_updates else rate_limited_windows + 1
+                if rate_limited_windows >= 3 or cooldown_after_batch >= max_seconds - (time.monotonic() - started):
+                    repository.mark_unfinished_rate_limited(run_id)
+                    repository.log(run_id, "warning", "source_rate_limit_breaker", {
+                        "origin": "handasi.complot.co.il" if adapter.name == "complot" else None,
+                        "consecutive_windows_without_progress": rate_limited_windows,
+                        "cooldown_seconds": round(cooldown_after_batch, 2),
+                        "reason": "repeated_429" if rate_limited_windows >= 3 else "cooldown_exceeds_worker_timebox",
+                    })
+                    return _finalize_report(repository, run_id, city["id"], date_from, date_to, "requires_review")
                 if not _wait_for_source_cooldown(repository, run_id, cooldown_after_batch):
                     return _finalize_report(repository, run_id, city["id"], date_from, date_to, "cancelled")
+                finalized_since_cooldown = 0
+            else:
+                rate_limited_windows = 0
 
         if repository.cancellation_requested(run_id):
             return _finalize_report(repository, run_id, city["id"], date_from, date_to, "cancelled")

@@ -40,6 +40,17 @@ class SupabaseRepository:
     def close(self) -> None:
         self.client.close()
 
+    def acquire_source_slot(self, origin: str, interval_seconds: float) -> dict[str, Any]:
+        return self._rest("POST", "rpc/acquire_source_slot",
+                          json={"p_origin": origin, "p_interval_seconds": interval_seconds}).json()
+
+    def release_source_slot(self, origin: str, token: str) -> None:
+        self._rest("POST", "rpc/release_source_slot", json={"p_origin": origin, "p_token": token})
+
+    def penalize_source(self, origin: str, seconds: float) -> None:
+        self._rest("POST", "rpc/penalize_source",
+                   json={"p_origin": origin, "p_cooldown_seconds": seconds})
+
     def _rest(self, method: str, path: str, **kwargs) -> httpx.Response:
         # A short DNS interruption on the self-hosted Windows runner must not
         # discard a multi-minute scan. JSON requests are buffered and can be
@@ -247,6 +258,14 @@ class SupabaseRepository:
             "PATCH",
             f"run_units?id=in.({encoded_ids})&status=eq.processing",
             json={"status": "pending", "claimed_by": None, "claimed_at": None},
+        )
+
+    def mark_unfinished_rate_limited(self, run_id: str) -> None:
+        self._rest(
+            "PATCH",
+            f"run_units?run_id=eq.{quote(run_id)}&status=in.(pending,processing)",
+            json={"status": "requires_review", "error_message": "המקור הגביל פניות חוזרות (429); היחידה לא נבדקה.",
+                  "completed_at": "now", "claimed_by": None, "claimed_at": None},
         )
 
     def progress_summary(self, run_id: str) -> dict[str, int]:

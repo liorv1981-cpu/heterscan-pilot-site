@@ -88,6 +88,11 @@ class AdapterReviewRequired(RuntimeError):
 class AdapterRateLimited(RuntimeError):
     """The source asked the worker to pause before safely retrying the unit."""
 
-    def __init__(self, message: str, *, retry_after_seconds: float) -> None:
+    def __init__(self, message: str, *, retry_after_seconds: float,
+                 origin: str | None = None, endpoint: str | None = None,
+                 retry_after_kind: str | None = None) -> None:
         super().__init__(message)
         self.retry_after_seconds = retry_after_seconds
+        self.origin = origin
+        self.endpoint = endpoint
+        self.retry_after_kind = retry_after_kind

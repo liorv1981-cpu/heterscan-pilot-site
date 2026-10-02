@@ -1,0 +1,13 @@
+# Municipal source rate limits
+
+Complot requests to `handasi.complot.co.il` pass through one service-only database slot per origin. Apply `20261002175740_source_rate_slots.sql` before deploying the worker. The slot stores the next request time, a 90-second in-flight lease, and the latest 429 cooldown. The worker fails closed if the slot RPC is unavailable. A crashed worker's lease expires; a late worker can release only its own token.
+
+The adapter starts at 0.25 requests per second and makes one request at a time. It raises the rate by at most 15% after 200 successful responses, up to one request per second. A 429 reduces the rate by 40% down to the 0.25 floor. A new adapter also starts at the floor, while the database retains the origin cooldown across processes.
+
+`Retry-After` accepts integer seconds or an HTTP date. An HTTP date uses the response `Date` header when present. Valid server values have no added jitter. Missing or invalid values use exponential cooldown, capped at 900 seconds, with a small jitter. The run releases affected units to pending before waiting. Three consecutive 429 windows with no finalized units, or a cooldown longer than the remaining worker timebox, mark all unfinished units `requires_review` and finalize the run as `requires_review`. The source is never reported as completed from a blocked response.
+
+Within one adapter instance, successful number-search pages with the requested application number may be reused. 429, CAPTCHA, blocked and empty pages are not cached. Logs contain origin, endpoint category, response counts, rate, concurrency, Retry-After kind and duration, and progress between cooldown windows. They do not include response bodies or cookies.
+
+The migration has RLS enabled and grants table access and RPC execution only to `service_role`. The service key stays in the worker environment. A smoke check after deployment should call `acquire_source_slot`, verify that a second acquisition reports a busy lease, release the token, call `penalize_source` with a short delay, and verify that another acquisition reports a blocked cooldown. This check must not contact a municipal source.
+
+Deployment verification on 2026-10-02: 92 worker tests and Ruff passed. A transactional SQL smoke check under `service_role` verified exclusive acquisition, expiry recovery, token ownership, and cooldown preservation. The transaction was rolled back and left no test rows. A privilege query confirmed RLS enabled, all three RPCs accessible to `service_role`, and no table or RPC access for `anon` or `authenticated`. The database advisor's informational notice about RLS without policies is intentional for this service-only table.

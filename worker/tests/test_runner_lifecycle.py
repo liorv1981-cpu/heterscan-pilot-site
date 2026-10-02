@@ -96,3 +96,109 @@ def test_complete_worker_path_publishes_report_and_updates_only_owned_progress(m
     assert repository.finish_units.call_args.args[0][0]["result_count"] == int(summary_only)
     repository.update_owned_run.assert_called_once()
     repository.update_run.assert_not_called()
+
+
+@pytest.mark.parametrize("cooldown", [0.0, 0.01])
+def test_repeated_429_marks_unchecked_units_for_review(monkeypatch, cooldown):
+    from heterscan.domain import AdapterRateLimited, SearchUnit
+
+    repository = Mock()
+    repository.get_run.return_value = {
+        "status": "running", "city_id": "8400", "date_from": "2026-01-01", "date_to": "2026-01-31",
+        "configuration_snapshot": {"city": {"id": "8400", "name_he": "רחובות",
+                                            "adapter_name": "complot", "adapter_config": {"site_id": "22"}}},
+    }
+    repository._rest.return_value.json.return_value = True
+    unit = SearchUnit("unit", "run", 1, "request:20260035", {"mode": "request"})
+    repository.claim_units.side_effect = [[unit], [unit], [unit]]
+    repository.cancellation_requested.return_value = False
+    repository.update_owned_run.return_value = True
+    repository.progress_counts.return_value = {"units_completed": 0, "applications_found": 0, "permits_found": 0}
+
+    class Adapter:
+        name = "complot"
+
+        def __init__(self, *_args, coordinator=None):
+            assert coordinator is repository
+
+        def parallelism(self):
+            return 1
+
+        def performance_snapshot(self):
+            return {"penalties": 0, "parallelism": 1}
+
+        def observe_wave(self, **_kwargs):
+            pass
+
+        def collect(self, *_args):
+            raise AdapterRateLimited("429", retry_after_seconds=cooldown,
+                                     origin="handasi.complot.co.il", endpoint="detail",
+                                     retry_after_kind="seconds")
+
+        def close(self):
+            pass
+
+    finalize = Mock(return_value=0)
+    monkeypatch.setattr(runner, "SupabaseRepository", lambda: repository)
+    monkeypatch.setattr(runner, "ADAPTERS", {"complot": Adapter})
+    monkeypatch.setattr(runner, "_wait_for_source_cooldown", lambda *_args: True)
+    monkeypatch.setattr(runner, "_finalize_report", finalize)
+
+    assert runner.run("run") == 0
+    assert repository.release_units.call_count == 3
+    repository.mark_unfinished_rate_limited.assert_called_once_with("run")
+    assert finalize.call_args.args[-1] == "requires_review"
+
+
+def test_worker_can_resume_pending_units_after_timebox_checkpoint(monkeypatch):
+    from heterscan.domain import SearchUnit
+    repository = Mock()
+    repository.get_run.return_value = {
+        "status": "safely_stopped", "city_id": "8400", "date_from": "2026-01-01", "date_to": "2026-01-31",
+        "configuration_snapshot": {"city": {"id": "8400", "name_he": "רחובות",
+                                            "adapter_name": "complot", "adapter_config": {"site_id": "22"}}},
+    }
+    claimed = Mock()
+    claimed.json.return_value = True
+    remaining = Mock()
+    remaining.json.return_value = [{"id": "pending-unit"}]
+    repository._rest.side_effect = [claimed, remaining]
+    repository.cancellation_requested.return_value = False
+    repository.update_owned_run.return_value = True
+
+    class Adapter:
+        name = "complot"
+        def __init__(self, *_args, coordinator=None):
+            assert coordinator is repository
+        def parallelism(self):
+            return 1
+        def performance_snapshot(self):
+            return {"penalties": 0, "parallelism": 1}
+        def observe_wave(self, **_kwargs):
+            pass
+        def collect(self, *_args):
+            return []
+        def close(self):
+            pass
+
+    monkeypatch.setenv("MAX_WORKER_SECONDS", "0")
+    monkeypatch.setattr(runner, "SupabaseRepository", lambda: repository)
+    monkeypatch.setattr(runner, "ADAPTERS", {"complot": Adapter})
+
+    assert runner.run("run") == 75
+    assert repository.update_owned_run.call_args.args[2]["status"] == "safely_stopped"
+    repository.mark_unfinished_rate_limited.assert_not_called()
+
+    # The next worker claims the same pending unit and finishes it.
+    monkeypatch.setenv("MAX_WORKER_SECONDS", "10")
+    repository._rest.side_effect = [claimed, Mock(json=Mock(return_value=[]))]
+    repository.claim_units.side_effect = [[SearchUnit("pending-unit", "run", 1, "request:20260035", {})], []]
+    repository.finish_units.return_value = 1
+    repository.progress_counts.return_value = {"units_completed": 1, "applications_found": 0, "permits_found": 0}
+    repository.progress_summary.return_value = {"units_requires_review": 0, "units_failed": 0,
+                                                "applications_found": 0}
+    finalize = Mock(return_value=0)
+    monkeypatch.setattr(runner, "_finalize_report", finalize)
+    assert runner.run("run") == 0
+    assert repository.finish_units.call_args.args[0][0]["id"] == "pending-unit"
+    assert repository.finish_units.call_args.args[0][0]["status"] == "completed"

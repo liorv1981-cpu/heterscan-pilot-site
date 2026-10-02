@@ -18,19 +18,22 @@ class ComplotAdapter(Adapter):
     version = "0.3.0"
     autocomplete_url = "https://handasi.complot.co.il/wsComplotPublicData/ComplotPublicData.asmx/GetBakashot"
 
-    def __init__(self, city_id: str, city_name: str, config: dict) -> None:
+    def __init__(self, city_id: str, city_name: str, config: dict, *, coordinator=None) -> None:
         super().__init__(city_id, city_name, config)
-        self.maximum_parallelism = max(1, min(6, int(config.get("max_parallelism", 4))))
+        self.maximum_parallelism = 1
         self._parallelism = self.maximum_parallelism
         self._clean_waves = 0
         self._tuning_lock = threading.Lock()
         self._range_counts = {"parsed_requests": 0, "before_range": 0, "after_range": 0, "in_range": 0}
-        initial_rate = float(config.get("initial_requests_per_second", 1.0))
+        initial_rate = min(0.25, float(config.get("initial_requests_per_second", 0.25)))
         self.rate_limiter = AdaptiveRateLimiter(
             requests_per_second=initial_rate,
-            target_requests_per_second=float(config.get("target_requests_per_second", 2.0)),
-            minimum_requests_per_second=float(config.get("minimum_requests_per_second", 0.25)),
-            maximum_requests_per_second=float(config.get("maximum_requests_per_second", 2.0)),
+            target_requests_per_second=min(1.0, float(config.get("target_requests_per_second", 1.0))),
+            minimum_requests_per_second=min(0.25, float(config.get("minimum_requests_per_second", 0.25))),
+            maximum_requests_per_second=min(1.0, float(config.get("maximum_requests_per_second", 1.0))),
+            success_window=200,
+            origin="handasi.complot.co.il",
+            coordinator=coordinator,
         )
         self.client = PublicHttpClient(
             delay_seconds=0,
@@ -64,7 +67,9 @@ class ComplotAdapter(Adapter):
     def performance_snapshot(self) -> dict[str, float | int]:
         with self._tuning_lock:
             counts = dict(self._range_counts)
-        return {"parallelism": self.parallelism(), **self.rate_limiter.snapshot(), **counts}
+        traffic = self.client.statistics() if hasattr(self.client, "statistics") else {}
+        return {"origin": "handasi.complot.co.il", "parallelism": self.parallelism(),
+                **self.rate_limiter.snapshot(), "endpoints": traffic, **counts}
 
     @staticmethod
     def _text(node) -> str:

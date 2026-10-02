@@ -201,6 +201,23 @@ def test_release_units_returns_unprocessed_claims_to_pending() -> None:
     ]
 
 
+def test_rate_limit_breaker_marks_only_unfinished_units_for_review() -> None:
+    repository = SupabaseRepository.__new__(SupabaseRepository)
+    calls = []
+
+    def fake_rest(method: str, path: str, **kwargs: Any) -> FakeResponse:
+        calls.append((method, path, kwargs["json"]))
+        return FakeResponse([])
+
+    repository._rest = fake_rest  # type: ignore[method-assign]
+    repository.mark_unfinished_rate_limited("run-1")
+
+    assert calls[0][0] == "PATCH"
+    assert calls[0][1] == "run_units?run_id=eq.run-1&status=in.(pending,processing)"
+    assert calls[0][2]["status"] == "requires_review"
+    assert "429" in calls[0][2]["error_message"]
+
+
 def test_enqueue_units_uses_one_rpc_call() -> None:
     repository = SupabaseRepository.__new__(SupabaseRepository)
     calls: list[tuple[str, str, Any]] = []

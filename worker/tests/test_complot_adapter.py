@@ -81,6 +81,17 @@ class _PrefixHintFakeClient(_SharedFakeClient):
         )
 
 
+def test_complot_starts_at_shared_host_floor_and_one_request_lane() -> None:
+    adapter = ComplotAdapter("8400", "רחובות", {"site_id": "22", "max_parallelism": 6,
+                                               "initial_requests_per_second": 2})
+    try:
+        assert adapter.parallelism() == 1
+        assert adapter.rate_limiter.snapshot()["requests_per_second"] == 0.25
+        assert adapter.rate_limiter.snapshot()["in_flight_limit"] == 1
+    finally:
+        adapter.close()
+
+
 def test_collect_returns_every_in_range_application_and_reuses_one_client(monkeypatch) -> None:
     _SharedFakeClient.instances.clear()
     monkeypatch.setattr(complot_module, "PublicHttpClient", _SharedFakeClient)
