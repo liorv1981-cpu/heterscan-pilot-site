@@ -170,7 +170,7 @@ def test_explicit_jerusalem_and_tel_aviv_permits_remain_issued() -> None:
         is_permit_issued=True, permit_status_original="הופק-הוצא היתר בניה",
         source_url="https://ykpubdata.jerusalem.muni.il/#/Rishui/BakashalInfo?TikNum=2026/0059.00",
         source_reference="2026/0059.00", adapter_name="jerusalem", adapter_version="0.1.0",
-        raw_data={"candidate": {"tik_num": "2026/0059.00"},
+        raw_data={"candidate": {"tik_num": "2026/0059.00", "taarih_status": "01/07/2026"},
                   "detail": {"shemRehov": "הרצל", "teurStatus": "הופק-הוצא היתר בניה"},
                   "process": [{"execDateStr": "27/01/2026", "stepCodeText": "קליטת בקשה"},
                               {"execDateStr": "01/07/2026", "stepCodeText": "חתימה אלקטרונית על היתר בניה"}]},
@@ -196,3 +196,23 @@ def test_explicit_jerusalem_and_tel_aviv_permits_remain_issued() -> None:
     outcome = validate_records([tel_aviv], SearchUnit("u", "r", 1, "city-wide", {}), TelAviv(),
                                date(2026, 1, 1), date(2026, 1, 31))
     assert outcome.issues == []
+
+
+def test_jerusalem_source_permit_is_not_silently_counted_as_absent() -> None:
+    class Jerusalem:
+        name, city_id, city_name, config = "jerusalem", "3000", "ירושלים", {}
+
+    record = ApplicationRecord(
+        city_id="3000", application_number="2026/0059.00", address="הרצל 8",
+        submission_date=date(2026, 1, 27), is_permit_issued=False,
+        source_url="https://ykpubdata.jerusalem.muni.il/#/Rishui/BakashalInfo?TikNum=2026/0059.00",
+        source_reference="2026/0059.00", adapter_name="jerusalem", adapter_version="0.1.0",
+        raw_data={"candidate": {"tik_num": "2026/0059.00", "taarih_status": "01/07/2026"},
+                  "detail": {"shemRehov": "הרצל", "teurStatus": "הופק-הוצא היתר בניה"},
+                  "process": [{"execDateStr": "27/01/2026", "stepCodeText": "קליטת בקשה"}]},
+    )
+    outcome = validate_records([record], SearchUnit("u", "r", 1, "street:1", {}), Jerusalem(),
+                               date(2026, 1, 1), date(2026, 1, 31))
+    assert "permit_issuance_mismatch" in {issue.code for issue in outcome.issues}
+    assert outcome.records[0].details_available is False
+    assert outcome.records[0].to_database(run_id="r", identity_key="a", content_hash="h")["permit_verification"] == "unknown"

@@ -166,17 +166,25 @@ def _jerusalem_issues(record: ApplicationRecord) -> list[str]:
     house_number = clean_text(detail.get("misparBait"))
     if house_number and house_number not in clean_text(record.address):
         issues.append("detail_house_number_mismatch")
-    if record.is_permit_issued:
-        status = detail.get("teurStatus") or candidate.get("teurStatus")
-        matching_event = any(
-            isinstance(row, dict)
-            and parse_date(row.get("execDateStr")) == record.permit_issue_date
-            and (normalized_key(row.get("stepCodeText")) in TERMINAL_PERMIT_EVENTS
-                 or "הוצאת היתר דיגיטלי חתום" in normalized_key(row.get("stepCodeText")))
-            for row in process
-        )
-        if not record.permit_issue_date or not (matching_event or _issued_status(status)):
-            issues.append("permit_evidence_missing")
+    status = detail.get("teurStatus") or candidate.get("teurStatus")
+    status_date = parse_date(candidate.get("taarih_status") or detail.get("fullTaarihStatus"))
+    terminal_dates = {
+        event_date for row in process if isinstance(row, dict)
+        if (event_date := parse_date(row.get("execDateStr"))) is not None
+        and (normalized_key(row.get("stepCodeText")) in TERMINAL_PERMIT_EVENTS
+             or "הוצאת היתר דיגיטלי חתום" in normalized_key(row.get("stepCodeText")))
+    }
+    source_issued = bool(terminal_dates or (status_date and _issued_status(status)))
+    if bool(record.is_permit_issued) != source_issued:
+        issues.append("permit_issuance_mismatch")
+    if record.is_permit_issued and (not record.permit_issue_date or not (
+        record.permit_issue_date in terminal_dates
+        or (_issued_status(status) and record.permit_issue_date == status_date)
+    )):
+        issues.append("permit_evidence_missing")
+    raw_permit_number = _permit_number(detail.get("misparHeter") or detail.get("heter_num"))
+    if record.permit_number and _permit_number(record.permit_number) != raw_permit_number:
+        issues.append("permit_number_mismatch")
     return issues
 
 
