@@ -4,6 +4,7 @@ from urllib.parse import parse_qs, urlparse
 from heterscan.adapters import complot as complot_module
 from heterscan.adapters.complot import ComplotAdapter
 from heterscan.domain import DiscoveryResult, SearchUnit
+from heterscan.validator import validate_records
 
 
 class _Response:
@@ -250,6 +251,8 @@ def test_direct_request_refresh_reads_latest_status_without_street_scan(monkeypa
     assert records[0].submission_date == date(2025, 7, 10)
     assert records[0].building_file_number == "F-20260843"
     assert records[0].permit_status_original == "היתר בתוקף"
+    assert records[0].raw_data["public_summary"]["request_number"] == "20260843"
+    assert validate_records(records, unit, adapter, date(2025, 1, 1), date(2025, 12, 31)).issues == []
     assert len(_SharedFakeClient.instances[0].calls) == 2
     assert "GetBakashotByNumber" in _SharedFakeClient.instances[0].calls[0]
     assert "GetBakashaFile" in _SharedFakeClient.instances[0].calls[1]

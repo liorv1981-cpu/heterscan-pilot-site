@@ -51,9 +51,12 @@ def test_cancellation_during_report_upload_wins_and_matches_workbook(monkeypatch
 @pytest.mark.parametrize("summary_only", [False, True])
 def test_complete_worker_path_publishes_report_and_updates_only_owned_progress(monkeypatch, summary_only):
     from heterscan.domain import AdapterReviewRequired, ApplicationRecord, SearchUnit
+    from heterscan.source_links import tel_aviv_source_url
     partial = ApplicationRecord(city_id="5000", application_number="20260001", address="public summary",
-                                source_url="https://example.test", source_reference="20260001",
-                                adapter_name="tel_aviv", adapter_version="test", raw_data={},
+                                source_url=tel_aviv_source_url("20260001"), source_reference="20260001",
+                                adapter_name="tel_aviv", adapter_version="test",
+                                raw_data={"request_num": "20260001", "open_request": "2026-01-04",
+                                          "permission_num": 0, "permission_date": None},
                                 submission_date=date(2026, 1, 4), details_available=False)
 
     repository = Mock()

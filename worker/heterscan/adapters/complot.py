@@ -350,6 +350,8 @@ class ComplotAdapter(Adapter):
             "parcels": parcels,
             "meetings": meetings,
         }
+        if isinstance(cached.get("public_summary"), dict):
+            raw_data["public_summary"] = cached["public_summary"]
         return ApplicationRecord(
             city_id=self.city_id,
             application_number=request_number,
@@ -428,8 +430,11 @@ class ComplotAdapter(Adapter):
                 markup = self.client.request("GET", self._detail_url(request_number)).text
                 record = self._record_from_detail(request_number, markup, cached={
                     **unit.payload, "submissionDate": row["submission_date"], "address": row["address"],
+                    "public_summary": row,
                 })
-                return [record] if in_range(record.submission_date, date_from, date_to) else []
+                # The validator compares detail and public-search dates before
+                # any record can be removed from the requested range.
+                return [record]
             except AdapterReviewRequired as error:
                 error.partial_records = [summary]
                 raise
@@ -462,6 +467,7 @@ class ComplotAdapter(Adapter):
                         "streetName": street_name,
                         "block": row["block"],
                         "parcel": row["parcel"],
+                        "public_summary": row,
                     },
                 )
             )

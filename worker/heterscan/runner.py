@@ -9,9 +9,10 @@ import time
 from datetime import date, datetime, timedelta, timezone
 
 from .adapters import ComplotAdapter, JerusalemAdapter, TelAvivAdapter
-from .domain import AdapterRateLimited, AdapterReviewRequired, DiscoveryResult
+from .domain import AdapterRateLimited, AdapterReviewRequired, ApplicationRecord, DiscoveryResult
 from .reporting import build_report
 from .supabase import SupabaseRepository
+from .validator import validate_records
 
 ADAPTERS = {"jerusalem": JerusalemAdapter, "tel_aviv": TelAvivAdapter, "complot": ComplotAdapter}
 
@@ -64,31 +65,68 @@ def _records_in_requested_range(records, date_from: date, date_to: date):
     ]
 
 
+def _validate_collection(adapter, unit, records, date_from: date, date_to: date):
+    if isinstance(records, DiscoveryResult):
+        return records, None
+    if not isinstance(records, list):
+        raise AdapterReviewRequired("המקור החזיר תוצאות במבנה לא צפוי.")
+    if not records:
+        return [], None
+    # Non-domain fixture records retain the old range guard. Production
+    # ApplicationRecord values always pass through the source validator.
+    if not all(isinstance(record, ApplicationRecord) for record in records):
+        return _records_in_requested_range(records, date_from, date_to), None
+    checked = validate_records(records, unit, adapter, date_from, date_to)
+    if not checked.issues:
+        return checked.records, None
+    codes = list(dict.fromkeys(issue.code for issue in checked.issues))
+    error = AdapterReviewRequired(
+        "אימות הרשומה מול נתוני המקור לא הושלם: " + ", ".join(codes[:8]),
+        diagnostics={"validator_issues": [
+            {"code": issue.code, "application_number": issue.application_number}
+            for issue in checked.issues[:30]
+        ]},
+        partial_records=checked.records,
+    )
+    return checked.records, error
+
+
+def _collect_one(adapter, unit, date_from: date, date_to: date):
+    try:
+        return _validate_collection(adapter, unit, adapter.collect(unit, date_from, date_to), date_from, date_to)
+    except Exception as error:
+        partial = getattr(error, "partial_records", [])
+        if not partial:
+            return [], error
+        checked, validator_error = _validate_collection(adapter, unit, partial, date_from, date_to)
+        if validator_error and isinstance(error, AdapterReviewRequired):
+            error.diagnostics = {**error.diagnostics, **validator_error.diagnostics}
+            error.partial_records = checked
+        return checked, error
+
+
 def _collect_wave(adapter, units, date_from: date, date_to: date):
     collected = []
     workers = min(len(units), _parallelism(adapter))
     if workers > 1:
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
             future_to_unit = {
-                executor.submit(adapter.collect, unit, date_from, date_to): unit for unit in units
+                executor.submit(_collect_one, adapter, unit, date_from, date_to): unit for unit in units
             }
             for future in concurrent.futures.as_completed(future_to_unit):
                 unit = future_to_unit[future]
                 try:
-                    collected.append(
-                        (unit, _records_in_requested_range(future.result(), date_from, date_to), None)
-                    )
+                    records, error = future.result()
+                    collected.append((unit, records, error))
                 except Exception as error:
-                    partial = _records_in_requested_range(getattr(error, "partial_records", []), date_from, date_to)
-                    collected.append((unit, partial, error))
+                    collected.append((unit, [], error))
     else:
         unit = units[0]
         try:
-            records = adapter.collect(unit, date_from, date_to)
-            collected.append((unit, _records_in_requested_range(records, date_from, date_to), None))
+            records, error = _collect_one(adapter, unit, date_from, date_to)
+            collected.append((unit, records, error))
         except Exception as error:
-            partial = _records_in_requested_range(getattr(error, "partial_records", []), date_from, date_to)
-            collected.append((unit, partial, error))
+            collected.append((unit, [], error))
     return collected
 
 
