@@ -264,12 +264,16 @@ def validate_records(
             record_issues.append("submission_out_of_range")
         if record_issues:
             issues.extend(ValidationIssue(code, record.application_number) for code in dict.fromkeys(record_issues))
-            unsafe_identity = {"city_mismatch", "adapter_mismatch", "application_number_missing", "source_url_mismatch",
-                               "source_link_number_mismatch",
+            unsafe_identity = {"city_mismatch", "adapter_mismatch", "application_number_missing",
                                "candidate_number_mismatch", "summary_number_mismatch",
                                "source_number_mismatch", "source_date_mismatch",
                                "submission_event_missing", "submission_out_of_range"}
-            if not unsafe_identity.intersection(record_issues) and safe.application_number and in_range(safe.submission_date, date_from, date_to):
+            link_issue = {"source_url_mismatch", "source_link_number_mismatch"}.intersection(record_issues)
+            link_repaired = bool(summary and record.adapter_name == "complot"
+                                 and _valid_host(safe, adapter) and _link_identifies_record(safe))
+            if (not unsafe_identity.intersection(record_issues)
+                    and (not link_issue or link_repaired)
+                    and safe.application_number and in_range(safe.submission_date, date_from, date_to)):
                 safe.raw_data["validator"] = {"version": VERSION, "status": "requires_review", "issues": list(dict.fromkeys(record_issues))}
                 safe_records.append(safe)
         else:

@@ -14,6 +14,9 @@ class ComplotSource:
     def parallelism(self):
         return 1
 
+    def _summary_source_url(self, number):
+        return f"https://rechovot.complot.co.il/iturbakashot/#search/GetBakashotByNumber&siteid=22&b={number}"
+
 
 def complot_record(*, detail_date: str = "01/01/2026", issued: bool = False) -> ApplicationRecord:
     detail = {"מספר היתר": "20260005", "תאריך הפקת היתר": "01/06/2026"} if issued else {}
@@ -114,13 +117,15 @@ def test_out_of_range_detail_cannot_erase_an_in_range_public_summary() -> None:
     assert records[0].details_available is False
 
 
-def test_source_link_to_another_application_never_persists_a_result() -> None:
+def test_source_link_to_another_application_retains_a_reviewable_public_summary() -> None:
     unit = SearchUnit("u", "r", 1, "request:20260005", {"mode": "request", "requestNumber": "20260005"})
     record = complot_record()
     record.source_url = "https://rechovot.complot.co.il/iturbakashot/#request/20260006"
     outcome = validate_records([record], unit, ComplotSource(), date(2026, 1, 1), date(2026, 1, 31))
     assert "source_link_number_mismatch" in {issue.code for issue in outcome.issues}
-    assert outcome.records == []
+    assert len(outcome.records) == 1
+    assert outcome.records[0].details_available is False
+    assert "b=20260005" in outcome.records[0].source_url
 
 
 def test_jerusalem_and_tel_aviv_payloads_use_their_own_identifiers() -> None:
