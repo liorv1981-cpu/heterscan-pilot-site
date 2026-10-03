@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from .domain import ApplicationRecord, SearchUnit
 from .normalize import clean_text, in_range, normalized_key, parse_date
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 TERMINAL_PERMIT_EVENTS = {
     normalized_key("הוצאת היתר בניה"),
     normalized_key("הוצאת היתר בנייה"),
@@ -57,6 +57,56 @@ def _field(fields: dict, *terms: str) -> str:
             if target in normalized_key(key):
                 return clean_text(value)
     return ""
+
+
+def _complot_address_evidence(record: ApplicationRecord, unit: SearchUnit, city_name: str) -> dict | None:
+    """Corroborate a coarse summary address without discarding detail-only components."""
+    raw = record.raw_data
+    summary, metadata, fields = (raw.get(key) for key in ("public_summary", "metadata", "detail"))
+    parcels = raw.get("parcels")
+    if (not record.details_available or not all(isinstance(value, dict) for value in (summary, metadata, fields))
+            or not isinstance(parcels, list) or len(parcels) != 1 or not isinstance(parcels[0], dict)):
+        return None
+    expected = _number(record.application_number)
+    requested = _number(unit.payload.get("requestNumber"))
+    if (not expected or (requested and requested != expected)
+            or _number(summary.get("request_number")) != expected
+            or _number(metadata.get("request_number")) != expected
+            or record.submission_date is None
+            or parse_date(summary.get("submission_date")) != record.submission_date
+            or parse_date(metadata.get("submission_date")) != record.submission_date):
+        return None
+    summary_address = _address(summary.get("address"), city_name)
+    detail_address = _address(metadata.get("address"), city_name)
+    if any(re.search(r"[0-9]\s*(?:[^\w\s]|_)+\s*[0-9]", clean_text(value))
+           for value in (summary.get("address"), metadata.get("address"))):
+        return None
+    # This rule only accepts a single explicit detail component after the same
+    # street and positive house number. Ranges, fractions and other numbers
+    # are not folded together. A suffix disagreement remains a conflict.
+    pattern = r"(.+?)\s+([1-9][0-9]*)(?:\s*([א-ת]))?(?:\s+(0))?"
+    coarse = re.fullmatch(pattern, summary_address)
+    precise = re.fullmatch(pattern, detail_address)
+    if (not coarse or not precise or coarse.group(3) or coarse.group(4)
+            or coarse.group(1, 2) != precise.group(1, 2)
+            or bool(precise.group(3)) + bool(precise.group(4)) != 1
+            or _address(record.address, city_name) not in {summary_address, detail_address}):
+        return None
+    building = clean_text(summary.get("building_file"))
+    block, parcel = clean_text(summary.get("block")), clean_text(summary.get("parcel"))
+    land = parcels[0]
+    if (not all(re.fullmatch(r"[0-9]+", value) for value in (building, block, parcel))
+            or building != clean_text(_field(fields, "מספר תיק בניין"))
+            or building != clean_text(record.building_file_number)
+            or block != clean_text(land.get("מספר גוש"))
+            or parcel != clean_text(land.get("מספר חלקה"))
+            or block != clean_text(record.block_number) or parcel != clean_text(record.parcel_number)):
+        return None
+    return {"comparison": "summary_less_specific", "verified_scope": "street_and_house_number",
+            "corroborating_fields": ["building_file_number", "block_number", "parcel_number"],
+            "detail_extra_component": precise.group(3) or precise.group(4),
+            "detail_extra_component_corroborated": False,
+            "summary_address": summary.get("address"), "detail_address": metadata.get("address")}
 
 
 def _issued_status(value: object) -> bool:
@@ -109,6 +159,7 @@ def _complot_issues(record: ApplicationRecord, unit: SearchUnit, city_name: str)
     metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else None
     detail = raw.get("detail") if isinstance(raw.get("detail"), dict) else {}
     issues = []
+    compatible_address = _complot_address_evidence(record, unit, city_name) is not None
     expected = _number(record.application_number)
     requested = _number(unit.payload.get("requestNumber"))
     if requested and requested != expected:
@@ -121,7 +172,9 @@ def _complot_issues(record: ApplicationRecord, unit: SearchUnit, city_name: str)
         summary_date = parse_date(summary.get("submission_date"))
         if summary_date is None or summary_date != record.submission_date:
             issues.append("summary_date_mismatch")
-        if summary.get("address") and record.address and _address(summary["address"], city_name) != _address(record.address, city_name):
+        if (summary.get("address") and record.address
+                and _address(summary["address"], city_name) != _address(record.address, city_name)
+                and not compatible_address):
             issues.append("summary_address_mismatch")
     if record.details_available:
         if metadata is None or _number(metadata.get("request_number")) != expected:
@@ -129,7 +182,8 @@ def _complot_issues(record: ApplicationRecord, unit: SearchUnit, city_name: str)
         if metadata is None or parse_date(metadata.get("submission_date")) != record.submission_date:
             issues.append("detail_date_mismatch")
         if metadata and metadata.get("address") and summary and summary.get("address"):
-            if _address(metadata["address"], city_name) != _address(summary["address"], city_name):
+            if (_address(metadata["address"], city_name) != _address(summary["address"], city_name)
+                    and not compatible_address):
                 issues.append("detail_address_mismatch")
         raw_permit = _permit_number(_field(detail, "מספר היתר"))
         raw_date = parse_date(_field(detail, "תאריך הפקת היתר", "תאריך היתר"))
@@ -287,13 +341,18 @@ def validate_records(
         else:
             level = "single_source_payload" if record.adapter_name == "tel_aviv" else "cross_source_payloads"
             checked_fields = ["application_number", "submission_date"]
-            if record.address:
+            address_evidence = (_complot_address_evidence(record, unit, city_name)
+                                if record.adapter_name == "complot" else None)
+            if address_evidence:
+                checked_fields.extend(["base_address", "building_file_number", "block_number", "parcel_number"])
+            elif record.address:
                 checked_fields.append("address")
             if record.is_permit_issued:
                 checked_fields.append("permit_issued")
             record.raw_data = {**record.raw_data, "validator": {
                 "version": VERSION, "status": "passed_consistency_checks", "level": level,
                 "checked_fields": checked_fields,
+                **({"address_evidence": address_evidence} if address_evidence else {}),
             }}
             safe_records.append(record)
     return ValidationResult(safe_records, issues)

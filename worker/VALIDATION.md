@@ -14,3 +14,19 @@ Passing records retain their fields and receive `raw_data.validator.status = "pa
 When evidence disagrees, the work unit becomes `requires_review`. The worker keeps a source-backed summary as a partial record when it can establish a number and in-range date. Permit and approval claims are removed from that partial record and the validator's issue codes remain in `raw_data.validator` and the unit log. A Complot link mismatch is repaired from the public-search route while the record remains partial and under review. Records with an unresolved city, identity or date, or a link that cannot be repaired safely, are withheld from the results while their work unit retains the review reason. A missing or blocked detail page remains `requires_review`.
 
 The validator does not solve CAPTCHA, circumvent rate limits, infer that an unknown permit does not exist, or turn an unverified zero into a verified zero.
+
+## A less specific Complot summary address
+
+Validator 0.2.0 recognizes one narrowly defined precision difference: the search
+summary has the same street and positive house number as the detail, while the
+detail adds one Hebrew letter or one separate `0` component. It requires matching
+application number and submission date, an identical numeric building-file number,
+and exactly one identical block/parcel pair in both payloads and the normalized
+record. Missing corroboration, another house/street, different explicit suffixes,
+ranges, nonzero additional numbers, or multiple parcel rows still require review.
+
+Neither source address is rewritten. `validator.address_evidence` records the raw
+addresses, the corroborating fields and `detail_extra_component_corroborated=false`.
+Only the street/house base is marked cross-checked; the extra component is retained
+as detail-source information, including `0` without assuming it is a placeholder.
+Permit checks, blocked-source checks and all historical snapshots remain unchanged.
