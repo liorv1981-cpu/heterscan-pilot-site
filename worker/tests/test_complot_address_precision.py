@@ -115,3 +115,23 @@ def test_address_precision_is_not_accepted_when_detail_identity_or_date_disagree
     outcome = validate(record, unit)
     assert "detail_address_mismatch" in {issue.code for issue in outcome.issues}
     assert outcome.records[0].details_available is False
+
+
+@pytest.mark.parametrize("identity", ["building", "block", "parcel"])
+def test_zero_placeholder_is_not_corroborating_land_identity(identity):
+    record, unit = captured_record("20260034", "טלר 9 רחובות", "טלר 9 ב רחובות")
+    if identity == "building":
+        record.building_file_number = "0"
+        record.raw_data["public_summary"]["building_file"] = "0"
+        record.raw_data["detail"]["מספר תיק בניין"] = "0"
+    elif identity == "block":
+        record.block_number = "0"
+        record.raw_data["public_summary"]["block"] = "0"
+        record.raw_data["parcels"][0]["מספר גוש"] = "0"
+    else:
+        record.parcel_number = "0"
+        record.raw_data["public_summary"]["parcel"] = "0"
+        record.raw_data["parcels"][0]["מספר חלקה"] = "0"
+    outcome = validate(record, unit)
+    assert "detail_address_mismatch" in {issue.code for issue in outcome.issues}
+    assert outcome.records[0].details_available is False

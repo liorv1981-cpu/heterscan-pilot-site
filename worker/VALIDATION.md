@@ -17,13 +17,14 @@ The validator does not solve CAPTCHA, circumvent rate limits, infer that an unkn
 
 ## A less specific Complot summary address
 
-Validator 0.2.0 recognizes one narrowly defined precision difference: the search
+Validator 0.2.1 recognizes one narrowly defined precision difference: the search
 summary has the same street and positive house number as the detail, while the
 detail adds one Hebrew letter or one separate `0` component. It requires matching
 application number and submission date, an identical numeric building-file number,
 and exactly one identical block/parcel pair in both payloads and the normalized
 record. Missing corroboration, another house/street, different explicit suffixes,
 ranges, nonzero additional numbers, or multiple parcel rows still require review.
+All-zero building/block/parcel placeholders are insufficient corroboration.
 
 Neither source address is rewritten. `validator.address_evidence` records the raw
 addresses, the corroborating fields and `detail_extra_component_corroborated=false`.

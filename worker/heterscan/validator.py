@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from .domain import ApplicationRecord, SearchUnit
 from .normalize import clean_text, in_range, normalized_key, parse_date
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 TERMINAL_PERMIT_EVENTS = {
     normalized_key("הוצאת היתר בניה"),
     normalized_key("הוצאת היתר בנייה"),
@@ -96,6 +96,7 @@ def _complot_address_evidence(record: ApplicationRecord, unit: SearchUnit, city_
     block, parcel = clean_text(summary.get("block")), clean_text(summary.get("parcel"))
     land = parcels[0]
     if (not all(re.fullmatch(r"[0-9]+", value) for value in (building, block, parcel))
+            or not all(re.search(r"[1-9]", value) for value in (building, block, parcel))
             or building != clean_text(_field(fields, "מספר תיק בניין"))
             or building != clean_text(record.building_file_number)
             or block != clean_text(land.get("מספר גוש"))
