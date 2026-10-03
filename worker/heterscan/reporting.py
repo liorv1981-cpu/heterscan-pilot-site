@@ -35,6 +35,12 @@ def report_filename(run: dict[str, Any], *, generated_at: datetime | None = None
     )
 
 
+def report_storage_filename(run: dict[str, Any]) -> str:
+    """Use an ASCII object key; the download endpoint supplies the readable name."""
+    city_id = re.sub(r"[^A-Za-z0-9_-]", "", str(run.get("city_id") or "city")) or "city"
+    return f"HETERSCAN_{city_id}_{run['date_from']}_{run['date_to']}_{run['id']}.xlsx"
+
+
 def _display_status(row: dict[str, Any]) -> str:
     if row.get("details_available") is False:
         if (row.get("raw_data") or {}).get("source_diagnostics", {}).get("collection_mode") == "public_summary":

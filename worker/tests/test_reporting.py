@@ -2,7 +2,14 @@ from io import BytesIO
 
 from openpyxl import load_workbook
 
-from heterscan.reporting import build_report
+from heterscan.reporting import build_report, report_filename, report_storage_filename
+
+
+def test_hebrew_report_name_is_separate_from_the_storage_key():
+    run = {"id": "run", "city_id": "8300", "city_name": "ראשון לציון",
+           "date_from": "2026-01-01", "date_to": "2026-01-31"}
+    assert "ראשון-לציון" in report_filename(run)
+    assert report_storage_filename(run) == "HETERSCAN_8300_2026-01-01_2026-01-31_run.xlsx"
 
 
 def test_report_includes_pending_applications_with_source_link() -> None:

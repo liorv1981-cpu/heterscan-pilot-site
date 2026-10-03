@@ -17,10 +17,24 @@ def test_regeneration_preserves_the_previous_storage_object(monkeypatch):
     path = regeneration.regenerate_report("run")
     assert path != "run/original.xlsx"
     assert path.startswith("run/") and path.endswith(".xlsx")
-    assert "ירושלים" in path and "2026-01-01_2026-01-31" in path and "_הופק-" in path
+    assert path.isascii() and "HETERSCAN_3000_2026-01-01_2026-01-31" in path
     assert repository.upload_report.call_args.args[0] == path
     assert repository.log.call_args.args[3]["previous_report_path"] == "run/original.xlsx"
     repository.close.assert_called_once()
+
+
+def test_failed_run_report_can_be_rebuilt_without_changing_its_status(monkeypatch):
+    repository = Mock()
+    repository.get_run.return_value = {
+        "status": "failed", "city_id": "8300", "city_name": "ראשון לציון",
+        "date_from": "2026-01-01", "date_to": "2026-01-31", "report_path": None,
+    }
+    repository.run_results.return_value = []
+    repository.run_units.return_value = []
+    monkeypatch.setattr(regeneration, "SupabaseRepository", lambda: repository)
+    path = regeneration.regenerate_report("run")
+    assert path.isascii()
+    repository.update_run.assert_called_once_with("run", {"report_path": path})
 
 
 @pytest.mark.parametrize("status", ["created", "dispatching", "running", "safely_stopped"])

@@ -10,7 +10,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from .adapters import ComplotAdapter, JerusalemAdapter, TelAvivAdapter
 from .domain import AdapterRateLimited, AdapterReviewRequired, ApplicationRecord, DiscoveryResult
-from .reporting import build_report, report_filename
+from .reporting import build_report, report_storage_filename
 from .supabase import SupabaseRepository
 from .validator import validate_records
 
@@ -176,6 +176,7 @@ def _finalize_report(
     report_run = {
         **current,
         "id": current.get("id") or run_id,
+        "city_id": current.get("city_id") or city_id,
         "city_name": current.get("city_name") or city_snapshot.get("name_he"),
         "date_from": current.get("date_from") or date_from.isoformat(),
         "date_to": current.get("date_to") or date_to.isoformat(),
@@ -183,7 +184,7 @@ def _finalize_report(
         "coverage_verification": coverage_verification,
     }
     report_bytes, checksum = build_report(report_run, results, units)
-    storage_path = f"{run_id}/{report_filename(report_run)}"
+    storage_path = f"{run_id}/{report_storage_filename(report_run)}"
     repository.upload_report(storage_path, report_bytes)
     repository.save_report_metadata(run_id, storage_path, checksum, len(report_bytes))
     counts = repository.progress_counts(run_id)
