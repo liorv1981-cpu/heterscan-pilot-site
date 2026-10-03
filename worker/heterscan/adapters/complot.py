@@ -5,21 +5,24 @@ import threading
 from datetime import date
 from urllib.parse import urlencode
 
-from lxml import html
+from lxml import etree, html
 
 from ..domain import AdapterRateLimited, AdapterReviewRequired, ApplicationRecord, DiscoveredUnit, DiscoveryResult, SearchUnit
-from ..http import AdaptiveRateLimiter, PublicHttpClient
+from ..http import AdaptiveRateLimiter, PublicHttpClient, _challenge_diagnostics
 from ..normalize import clean_text, in_range, normalized_key, parse_date
 from .base import Adapter
 
 
 class ComplotAdapter(Adapter):
     name = "complot"
-    version = "0.3.0"
+    version = "0.4.0"
     autocomplete_url = "https://handasi.complot.co.il/wsComplotPublicData/ComplotPublicData.asmx/GetBakashot"
 
     def __init__(self, city_id: str, city_name: str, config: dict, *, coordinator=None) -> None:
         super().__init__(city_id, city_name, config)
+        self.collection_mode = config.get("collection_mode", "full_details")
+        if self.collection_mode not in {"full_details", "public_summary"}:
+            raise ValueError("Unknown Complot collection mode")
         self.maximum_parallelism = 1
         self._parallelism = self.maximum_parallelism
         self._clean_waves = 0
@@ -133,7 +136,13 @@ class ComplotAdapter(Adapter):
         return self._detail_url(request_number)
 
     def _list_rows(self, markup: str) -> list[dict[str, str]]:
-        document = html.fromstring(markup)
+        try:
+            document = html.fromstring(markup)
+        except (etree.ParserError, ValueError) as error:
+            raise AdapterReviewRequired(
+                "דף החיפוש ריק או פגום; לא ניתן להסיק שאין בקשות.",
+                diagnostics={**_challenge_diagnostics(markup), "parser_result": "parser_mismatch"},
+            ) from error
         rows: list[dict[str, str]] = []
         for tr in document.xpath("//tbody/tr"):
             row_html = html.tostring(tr, encoding="unicode")
@@ -153,6 +162,13 @@ class ComplotAdapter(Adapter):
                     "block": cells[6] if len(cells) > 6 else "",
                     "parcel": cells[7] if len(cells) > 7 else "",
                 }
+            )
+        if not rows:
+            # An HTML search with no identifiable rows is not an independently
+            # verified zero, including legacy street units.
+            raise AdapterReviewRequired(
+                "לא זוהו שורות בקשה בדף החיפוש; תוצאת האפס לא אומתה.",
+                diagnostics={**_challenge_diagnostics(markup), "parser_result": "parser_mismatch"},
             )
         return rows
 
@@ -219,7 +235,14 @@ class ComplotAdapter(Adapter):
             self.autocomplete_url,
             json={"site_id": int(self.config["site_id"]), "key": "0", "prefix": int(prefix)},
         )
-        data = response.json()
+        try:
+            data = response.json()
+        except ValueError as error:
+            raise AdapterReviewRequired(
+                "לא ניתן לפענח את תשובת החיפוש; לא ניתן להסיק שאין בקשות.",
+                diagnostics={**getattr(response, "extensions", {}).get("source_diagnostics", {}),
+                             "parser_result": "parser_mismatch"},
+            ) from error
         if not isinstance(data, dict) or not isinstance(data.get("d"), list):
             raise AdapterReviewRequired("מבנה תשובת החיפוש אינו תקין; לא ניתן להסיק שאין בקשות.")
         items = data["d"]
@@ -294,13 +317,24 @@ class ComplotAdapter(Adapter):
         self, request_number: str, markup: str, *, cached: dict | None = None
     ) -> ApplicationRecord:
         cached = cached or {}
-        document = html.fromstring(markup)
+        diagnostics = _challenge_diagnostics(markup)
+        try:
+            document = html.fromstring(markup)
+        except (etree.ParserError, ValueError) as error:
+            raise AdapterReviewRequired(
+                "פרטי הבקשה ריקים או פגומים; מצב ההיתר לא ידוע.",
+                diagnostics={**diagnostics, "parser_result": "detail_missing"},
+            ) from error
         metadata = self._detail_metadata(document)
         observed_number = re.sub(r"\D", "", metadata.get("request_number", ""))
         if observed_number != re.sub(r"\D", "", request_number):
             raise AdapterReviewRequired(
                 "פרטי המקור אינם מזהים את הבקשה שהתבקשה; נדרשת בדיקת מקור.",
                 diagnostics={
+                    **diagnostics,
+                    "parser_result": ("identity_mismatch" if observed_number else
+                                      "parser_mismatch" if document.xpath("//*[@id='result-title-div-id']")
+                                      else "detail_missing"),
                     "requested_number": request_number, "observed_number": observed_number,
                     "title_container": bool(document.xpath("//*[@id='result-title-div-id']")),
                     # Public display text only: exclude scripts, styles and form values.
@@ -323,8 +357,14 @@ class ComplotAdapter(Adapter):
         if submitted is None:
             raise AdapterReviewRequired(
                 "חסר תאריך הגשה תקין במקור; לא ניתן לבדוק את טווח התאריכים.",
-                diagnostics={"request_number": request_number, "date_text": metadata.get("submission_date"),
+                diagnostics={**diagnostics, "parser_result": "parser_mismatch",
+                             "request_number": request_number, "date_text": metadata.get("submission_date"),
                              "date_field_labels": [key for key in fields if "תאריך" in key][:10]},
+            )
+        if not diagnostics["request_detail_markup"] or not (fields or events or requirements or parcels or meetings):
+            raise AdapterReviewRequired(
+                "מבנה פרטי הבקשה חסר; מצב ההיתר לא ידוע.",
+                diagnostics={**diagnostics, "parser_result": "detail_missing"},
             )
         permit_number = clean_text(self._field(fields, "מספר היתר")) or None
         permit_date = parse_date(self._field(fields, "תאריך הפקת היתר", "תאריך היתר"))
@@ -409,7 +449,8 @@ class ComplotAdapter(Adapter):
         if mode == "request":
             request_number = clean_text(unit.payload.get("requestNumber"))
             summary_url = self._number_list_url(request_number)
-            summary_markup = self.client.request("GET", summary_url).text
+            summary_response = self.client.request("GET", summary_url)
+            summary_markup = summary_response.text
             matches = [row for row in self._list_rows(summary_markup) if row["request_number"] == request_number]
             if len(matches) != 1:
                 raise AdapterReviewRequired("לא נמצא רישום פומבי חד־משמעי לבקשה בחיפוש העירוני.")
@@ -431,16 +472,47 @@ class ComplotAdapter(Adapter):
                 adapter_name=self.name, adapter_version=self.version,
                 raw_data={"public_summary": row, "details_available": False}, details_available=False,
             )
+            if self.collection_mode == "public_summary":
+                diagnostics = {
+                    **getattr(summary_response, "extensions", {}).get("source_diagnostics", {}),
+                    "collection_mode": "public_summary", "detail_requested": False,
+                    "parser_result": "summary_parsed", "detail_state": "not_requested",
+                }
+                summary.raw_data["source_diagnostics"] = diagnostics
+                summary.raw_data["field_provenance"] = {
+                    field: {"kind": "public_search_summary", "source_url": summary.source_url}
+                    for field, value in (("application_number", request_number), ("address", summary.address),
+                                         ("submission_date", submitted),
+                                         ("building_file_number", summary.building_file_number),
+                                         ("block_number", summary.block_number), ("parcel_number", summary.parcel_number))
+                    if value
+                }
+                raise AdapterReviewRequired(
+                    "נאסף סיכום הבקשה בלבד; פרטים ומצב היתר לא אומתו.",
+                    diagnostics=diagnostics, partial_records=[summary],
+                )
+            response = None
             try:
-                markup = self.client.request("GET", self._detail_url(request_number)).text
+                response = self.client.request("GET", self._detail_url(request_number))
+                markup = response.text
                 record = self._record_from_detail(request_number, markup, cached={
                     **unit.payload, "submissionDate": row["submission_date"], "address": row["address"],
                     "public_summary": row,
                 })
+                record.raw_data["source_diagnostics"] = {
+                    **getattr(response, "extensions", {}).get("source_diagnostics", {}),
+                    "parser_result": "parsed",
+                }
                 # The validator compares detail and public-search dates before
                 # any record can be removed from the requested range.
                 return [record]
             except AdapterReviewRequired as error:
+                if response is not None:
+                    error.diagnostics = {
+                        **getattr(response, "extensions", {}).get("source_diagnostics", {}),
+                        **error.diagnostics,
+                    }
+                summary.raw_data["source_diagnostics"] = dict(error.diagnostics)
                 error.partial_records = [summary]
                 raise
             except AdapterRateLimited:
@@ -452,6 +524,8 @@ class ComplotAdapter(Adapter):
                 ) from error
 
         # Backward compatibility for runs created by the former street strategy.
+        if self.collection_mode == "public_summary":
+            raise AdapterReviewRequired("מצב סיכומי בקשות מחייב יחידות חיפוש לפי מספר בקשה.")
         street_code = clean_text(unit.payload.get("streetCode"))
         street_name = clean_text(unit.payload.get("streetName")) or None
         markup = self.client.request("GET", self._list_url(street_code)).text

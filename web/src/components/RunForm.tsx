@@ -2,7 +2,7 @@ import { CalendarDays, Play, RotateCcw } from 'lucide-react'
 import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { daysAgoIso, todayIso, validateDateRange } from '../lib/date'
 import { cityScanNote } from '../lib/cityNotes'
-import type { City, Run, StartRunInput } from '../types'
+import type { City, CollectionMode, Run, StartRunInput } from '../types'
 
 interface RunFormProps {
   cities: City[]
@@ -246,6 +246,8 @@ function DatePickerField({ label, value, min, max, disabled, onChange, onValidit
 
 export function RunForm({ cities, disabled, disabledLabel, displayedRun, onSubmit, onReset }: RunFormProps) {
   const [cityId, setCityId] = useState(displayedRun?.cityId ?? '7900')
+  const [collectionMode, setCollectionMode] = useState<CollectionMode>(displayedRun?.collectionMode ?? 'full_details')
+  const supportsSummary = cities.find((city) => city.id === cityId)?.adapterName === 'complot'
   const [dateFrom, setDateFrom] = useState(displayedRun?.dateFrom ?? daysAgoIso(30))
   const [dateTo, setDateTo] = useState(displayedRun?.dateTo ?? todayIso())
   const [dateFromValid, setDateFromValid] = useState(true)
@@ -259,14 +261,19 @@ export function RunForm({ cities, disabled, disabledLabel, displayedRun, onSubmi
     const validationError = validateDateRange(dateFrom, dateTo)
     if (validationError) return setError(validationError)
     setError(null)
-    await onSubmit({ cityId, dateFrom, dateTo })
+    await onSubmit({ cityId, dateFrom, dateTo,
+      ...(supportsSummary && collectionMode === 'public_summary' ? { collectionMode } : {}),
+    })
   }
 
   return (
     <form className="run-form" onSubmit={handleSubmit} aria-label="הפעלת סריקה חדשה">
       <label>
         <span>עיר</span>
-        <select value={cityId} onChange={(event) => setCityId(event.target.value)} disabled={disabled}>
+        <select value={cityId} onChange={(event) => {
+          setCityId(event.target.value)
+          setCollectionMode('full_details')
+        }} disabled={disabled}>
           {cities.map((city) => <option key={city.id} value={city.id}>{city.name} ({cityScanNote(city.id)})</option>)}
         </select>
       </label>
@@ -282,6 +289,19 @@ export function RunForm({ cities, disabled, disabledLabel, displayedRun, onSubmi
           איפוס
         </button>
       </div>
+      {supportsSummary ? <div className="collection-mode-field">
+        <label>
+          <span>היקף הסריקה</span>
+          <select value={collectionMode} disabled={disabled} aria-describedby="collection-mode-note"
+            onChange={(event) => setCollectionMode(event.target.value as CollectionMode)}>
+            <option value="full_details">בקשות ופרטים זמינים</option>
+            <option value="public_summary">סיכומי בקשות בלבד</option>
+          </select>
+        </label>
+        <p id="collection-mode-note" className="collection-mode-note">{collectionMode === 'public_summary'
+          ? 'ייאספו מספר בקשה, כתובת ותאריך מהחיפוש הציבורי. דפי הפרטים לא ייפתחו ומצב ההיתר יישאר לא ידוע.'
+          : 'פרטים שאינם נגישים יישמרו כמידע חלקי וידרשו בדיקה.'}</p>
+      </div> : null}
       {error ? <p className="form-error" role="alert">{error}</p> : null}
     </form>
   )

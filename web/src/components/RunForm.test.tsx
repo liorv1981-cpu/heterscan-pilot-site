@@ -15,6 +15,32 @@ const displayedRun: Run = {
 afterEach(cleanup)
 
 describe('RunForm date display', () => {
+  it('sends the explicit summary mode and describes unavailable permit verification', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined)
+    render(<RunForm cities={[{ id: '7900', name: 'פתח תקווה', adapterName: 'complot' }]}
+      disabled={false} displayedRun={displayedRun} onSubmit={onSubmit} onReset={vi.fn()} />)
+    fireEvent.change(screen.getByRole('combobox', { name: 'היקף הסריקה' }), { target: { value: 'public_summary' } })
+    expect(screen.getByText(/דפי הפרטים לא ייפתחו ומצב ההיתר יישאר לא ידוע/)).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'הפעלת סריקה' }))
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({ cityId: '7900', dateFrom: '2026-01-01',
+      dateTo: '2026-01-31', collectionMode: 'public_summary' }))
+  })
+  it('clears summary mode when changing to a source without public summaries', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined)
+    render(<RunForm cities={[{ id: '7900', name: 'פתח תקווה', adapterName: 'complot' },
+      { id: '3000', name: 'ירושלים', adapterName: 'jerusalem' }]} disabled={false}
+      displayedRun={displayedRun} onSubmit={onSubmit} onReset={vi.fn()} />)
+    fireEvent.change(screen.getByRole('combobox', { name: 'היקף הסריקה' }), { target: { value: 'public_summary' } })
+    fireEvent.change(screen.getByRole('combobox', { name: 'עיר' }), { target: { value: '3000' } })
+    expect(screen.queryByRole('combobox', { name: 'היקף הסריקה' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'הפעלת סריקה' }))
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({ cityId: '3000', dateFrom: '2026-01-01', dateTo: '2026-01-31' }))
+  })
+  it('keeps collection policy locked during a run', () => {
+    render(<RunForm cities={[{ id: '7900', name: 'פתח תקווה', adapterName: 'complot' }]}
+      disabled displayedRun={displayedRun} onSubmit={vi.fn()} onReset={vi.fn()} />)
+    expect(screen.getByRole('combobox', { name: 'היקף הסריקה' })).toBeDisabled()
+  })
   it('moves keyboard focus across days and restores the trigger on Escape', () => {
     render(<RunForm cities={[{ id: '7900', name: 'פתח תקווה' }]} disabled={false} displayedRun={displayedRun} onSubmit={vi.fn()} onReset={vi.fn()} />)
     const trigger = screen.getByRole('button', { name: 'פתיחת לוח שנה: מתאריך' })

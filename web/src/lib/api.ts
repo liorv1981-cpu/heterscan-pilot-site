@@ -4,13 +4,14 @@ import { functionError } from './functionError'
 import { activeStatuses, isActiveRun } from './run'
 import { readAllPages } from './pagination'
 import { stableSourceUrl } from './sourceLinks'
+import { collectionModeFor } from '../../../supabase/functions/start-run/collection'
 
 const citySeed: City[] = [
-  { id: '3000', name: 'ירושלים' },
-  { id: '5000', name: 'תל אביב-יפו' },
-  { id: '4000', name: 'חיפה' },
-  { id: '7900', name: 'פתח תקווה' },
-  { id: '8300', name: 'ראשון לציון' },
+  { id: '3000', name: 'ירושלים', adapterName: 'jerusalem' },
+  { id: '5000', name: 'תל אביב-יפו', adapterName: 'tel_aviv' },
+  { id: '4000', name: 'חיפה', adapterName: 'complot' },
+  { id: '7900', name: 'פתח תקווה', adapterName: 'complot' },
+  { id: '8300', name: 'ראשון לציון', adapterName: 'complot' },
 ]
 
 const demoPermits: Omit<Permit, 'runId'>[] = [
@@ -47,12 +48,14 @@ function createLocalApi(): PilotApi {
       if ([...demoRuns.values()].some(isActiveRun)) throw new Error('כבר קיימת סריקה פעילה.')
       const city = citySeed.find((item) => item.id === input.cityId)
       if (!city) throw new Error('הרשות שנבחרה אינה זמינה בפיילוט.')
+      const collectionMode = collectionModeFor(city.adapterName ?? '', input.collectionMode)
       const id = crypto.randomUUID()
       const now = new Date().toISOString()
       const run: Run = {
         id, cityId: city.id, cityName: city.name, dateFrom: input.dateFrom, dateTo: input.dateTo,
         status: 'running', createdAt: now, startedAt: now, unitsTotal: 100, unitsCompleted: 18,
         permitsFound: 0, applicationsFound: 0,
+        collectionMode,
       }
       demoRuns.set(id, run)
       return run
@@ -79,10 +82,17 @@ function createLocalApi(): PilotApi {
           status: 'cancelled', completedAt: new Date().toISOString(), reportPath: `local/${runId}.xlsx`,
         } satisfies Partial<Run>)
       } else if (elapsed > 2600 && run.status === 'running') {
+        const rows = demoPermits.filter((permit) => permit.submissionDate
+          && permit.submissionDate >= run.dateFrom && permit.submissionDate <= run.dateTo)
         Object.assign(run, {
-          status: 'completed', completedAt: new Date().toISOString(), unitsCompleted: 100,
-          permitsFound: demoPermits.filter((result) => result.isPermitIssued).length,
-          applicationsFound: demoPermits.length, reportPath: `local/${runId}.xlsx`,
+          status: run.collectionMode === 'public_summary' ? 'requires_review' : 'completed',
+          completedAt: new Date().toISOString(), unitsCompleted: 100,
+          permitsFound: run.collectionMode === 'public_summary' ? 0 : rows.filter((result) => result.isPermitIssued).length,
+          applicationsFound: rows.length,
+          // The bundled demo workbook is not a public-summary export.
+          reportPath: run.collectionMode === 'public_summary' ? undefined : `local/${runId}.xlsx`,
+          coverageVerification: rows.length === 0 ? 'zero_not_verified'
+            : run.collectionMode === 'public_summary' ? 'partial' : 'not_verified',
         } satisfies Partial<Run>)
       } else if (run.status === 'running') {
         run.unitsCompleted = Math.min(92, run.unitsCompleted + 22)
@@ -91,9 +101,13 @@ function createLocalApi(): PilotApi {
     },
     async listPermits(runId: string) {
       const run = demoRuns.get(runId)
-      return run?.status === 'completed'
+      return run && ['completed', 'requires_review'].includes(run.status)
         ? demoPermits.filter((permit) => permit.submissionDate && permit.submissionDate >= run.dateFrom && permit.submissionDate <= run.dateTo)
-          .map((permit) => ({ ...permit, runId }))
+          .map((permit) => run.collectionMode === 'public_summary' ? {
+            ...permit, runId, isPermitIssued: false, isApproved: false,
+            permitNumber: 'לא ידוע', permitIssueDate: undefined, permitVerification: 'unknown',
+            statusOriginal: 'סיכום בקשה בלבד — מצב היתר לא ידוע', confidence: undefined,
+          } : ({ ...permit, runId }))
         : []
     },
     async downloadReport(run) {
@@ -108,6 +122,7 @@ function createLocalApi(): PilotApi {
 }
 
 function mapRun(row: Record<string, unknown>): Run {
+  const snapshot = row.configuration_snapshot as { collectionMode?: Run['collectionMode'] } | undefined
   return {
     id: String(row.id), cityId: String(row.city_id), cityName: String(row.city_name ?? ''),
     dateFrom: String(row.date_from), dateTo: String(row.date_to), status: row.status as Run['status'],
@@ -119,16 +134,17 @@ function mapRun(row: Record<string, unknown>): Run {
     coverageVerification: row.coverage_verification as Run['coverageVerification'],
     reportPath: row.report_path ? String(row.report_path) : undefined,
     errorMessage: row.error_message ? String(row.error_message) : undefined,
+    collectionMode: snapshot?.collectionMode,
   }
 }
 
 function createSupabaseApi(client: SupabaseClient): PilotApi {
   return {
     async listCities() {
-      const { data, error } = await client.from('cities').select('id,name_he').eq('is_active', true).order('display_order')
+      const { data, error } = await client.from('cities').select('id,name_he,adapter_name').eq('is_active', true).order('display_order')
       if (error) throw error
-      const rows = (data ?? []) as unknown as Array<{ id: string; name_he: string }>
-      return rows.map((row) => ({ id: String(row.id), name: row.name_he }))
+      const rows = (data ?? []) as unknown as Array<{ id: string; name_he: string; adapter_name: string }>
+      return rows.map((row) => ({ id: String(row.id), name: row.name_he, adapterName: row.adapter_name }))
     },
     async listRuns() {
       const rows = await readAllPages<Record<string, unknown>>(async (from, to) => {

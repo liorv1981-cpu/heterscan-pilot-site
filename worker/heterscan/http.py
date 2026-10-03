@@ -6,11 +6,11 @@ import threading
 import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from html import unescape
 from collections.abc import Callable
 from urllib.parse import urlparse, parse_qs
 
 import httpx
+from lxml import etree, html
 
 from .domain import AdapterRateLimited, AdapterReviewRequired
 
@@ -40,16 +40,69 @@ def endpoint_category(url: str) -> str:
 
 
 def _challenge_diagnostics(markup: str) -> dict:
-    """Log structural flags only, not response bodies, cookies or form values."""
-    sample = markup[:50000]
-    title = re.search(r"<title[^>]*>(.*?)</title>", sample, re.I | re.S)
-    rendered = re.sub(r"<(script|style)\b[^>]*>.*?</\1>", "", sample, flags=re.I | re.S)
-    rendered = unescape(re.sub(r"<[^>]+>", " ", rendered))
+    """Static DOM evidence, not proof of browser rendering; never return script/form values."""
+    try:
+        document = html.fromstring(markup)
+    except (etree.ParserError, ValueError):
+        document = html.fromstring("<html></html>")
+    scripts = " ".join(
+        " ".join(node.itertext()) + " " + node.get("src", "")
+        for node in document.xpath("//script")
+    ).lower()
+    markers = [marker for marker in ("recaptcha", "hcaptcha", "cf-chl-", "captcha") if marker in scripts]
+    badge_present = bool(document.xpath(
+        "//*[contains(concat(' ', normalize-space(@class), ' '), ' grecaptcha-badge ')]"
+    ))
+    # Remove non-display content and explicitly hidden subtrees. External CSS
+    # and JS-only challenges still require the adapter's expected-shape guard.
+    for node in list(document.iter()):
+        if not isinstance(node.tag, str) or node.getparent() is None:
+            continue
+        style = re.sub(r"\s+", "", node.get("style", "").lower())
+        if (node.tag in {"script", "style", "template", "noscript", "input", "textarea"}
+                or "grecaptcha-badge" in node.get("class", "").split()
+                or "hidden" in node.attrib or node.get("aria-hidden", "").lower() == "true"
+                or "display:none" in style or "visibility:hidden" in style):
+            node.drop_tree()
+    rendered = " ".join(" ".join(document.itertext()).split()).lower()
+    challenge_text = any(term in rendered for term in (
+        "captcha", "אני לא רובוט", "i'm not a robot", "verify you are human",
+        "verify that you are human", "נדרש אימות משתמש",
+    ))
+    widgets = []
+    for node in document.iter():
+        if not isinstance(node.tag, str):
+            continue
+        classes = set(node.get("class", "").lower().split())
+        if (classes.intersection({"g-recaptcha", "h-captcha", "cf-turnstile"})
+                and node.get("data-size", "").lower() != "invisible"):
+            widgets.append("challenge_container")
+        if node.tag == "iframe":
+            try:
+                src = urlparse(node.get("src", ""))
+            except ValueError:
+                continue
+            if (src.hostname in {"www.google.com", "www.recaptcha.net", "www.hcaptcha.com"}
+                    and ("/recaptcha/" in src.path or "/captcha/" in src.path)
+                    and parse_qs(src.query).get("size") != ["invisible"]):
+                widgets.append("challenge_iframe")
+    rejected_url = "the requested url was rejected" in rendered
+    f5_rejection = rejected_url and ("f5" in rendered or "big-ip" in rendered)
+    explicit_block = f5_rejection or any(term in rendered for term in (
+        "access denied", "request blocked", "the requested url was rejected", "הגישה נחסמה",
+    ))
     return {
-        "title": re.sub(r"\s+", " ", unescape(title.group(1))).strip()[:120] if title else None,
-        "request_detail_markup": "info-main" in sample and "result-title-div-id" in sample,
-        "captcha_in_rendered_text": "captcha" in rendered.lower(),
-        "script_markers": [marker for marker in ("recaptcha", "hcaptcha", "cf-chl-") if marker in sample.lower()],
+        "request_detail_markup": bool(document.xpath("//*[@id='info-main']"))
+        and bool(document.xpath("//*[@id='result-title-div-id']")),
+        "captcha_in_rendered_text": "captcha" in rendered,
+        "visible_challenge": challenge_text or bool(widgets),
+        "challenge_text": challenge_text,
+        "challenge_widgets": sorted(set(widgets)),
+        "challenge_script_marker": bool(markers),
+        "challenge_badge": badge_present,
+        "script_markers": markers,
+        "explicit_block": explicit_block,
+        "f5_rejection": f5_rejection,
     }
 
 
@@ -184,6 +237,7 @@ class PublicHttpClient:
         self._statistics: dict[str, dict[str, int]] = {}
         self._stats_lock = threading.Lock()
         self._positive_search_cache: dict[str, httpx.Response] = {}
+        self._blocked_origins: dict[str, dict] = {}
         self.client = httpx.Client(
             timeout=timeout_seconds,
             follow_redirects=True,
@@ -202,7 +256,21 @@ class PublicHttpClient:
         with self._stats_lock:
             return {key: dict(value) for key, value in self._statistics.items()}
 
+    def _raise_if_origin_blocked(self, origin: str) -> None:
+        with self._stats_lock:
+            blocked = self._blocked_origins.get(origin)
+        if blocked is not None:
+            raise AdapterReviewRequired(
+                "הפניות למקור נעצרו לאחר אתגר או חסימה; נדרשת בדיקת מקור.",
+                diagnostics={"classification": "source_blocked", "request_skipped": True,
+                             "http_status": None, "visible_challenge": None,
+                             "challenge_script_marker": None, "source_origin": origin,
+                             "parser_result": "not_attempted", "blocking_evidence": dict(blocked)},
+            )
+
     def request(self, method: str, url: str, *, attempts: int = 4, **kwargs) -> httpx.Response:
+        origin = urlparse(url).netloc
+        self._raise_if_origin_blocked(origin)
         cacheable = method.upper() == "GET" and endpoint_category(url) == "number_search"
         if cacheable:
             with self._stats_lock:
@@ -222,6 +290,9 @@ class PublicHttpClient:
                         time.sleep(wait)
                     self._last_request_at = time.monotonic()
             try:
+                # A queued call may have been waiting when another request
+                # encountered a challenge. Check again after acquiring a slot.
+                self._raise_if_origin_blocked(origin)
                 response = self.client.request(method, url, **kwargs)
                 self._last_request_at = time.monotonic()
                 category = endpoint_category(url)
@@ -267,17 +338,31 @@ class PublicHttpClient:
                         time.sleep(cooldown_seconds)
                         continue
                     raise last_error
-                captcha = "captcha" in response.text[:5000].lower()
-                if response.status_code == 403 or captcha:
+                diagnostics = _challenge_diagnostics(response.text)
+                diagnostics.update(
+                    http_status=response.status_code, source_origin=origin, endpoint=category,
+                    observed_at=datetime.now(timezone.utc).isoformat(),
+                    response_headers={key: response.headers[key] for key in
+                                      ("content-type", "retry-after", "date") if key in response.headers},
+                )
+                response.extensions["source_diagnostics"] = diagnostics
+                reason = ("http_blocked" if response.status_code in {401, 403} else
+                          "f5_rejection" if diagnostics["f5_rejection"] else
+                          "visible_challenge" if diagnostics["visible_challenge"] else
+                          "source_blocked" if diagnostics["explicit_block"] else None)
+                if reason:
+                    diagnostics["classification"] = reason
+                    with self._stats_lock:
+                        self._blocked_origins[origin] = dict(diagnostics)
                     raise AdapterReviewRequired(
-                        f"המקור החזיר חסימה או CAPTCHA ({response.status_code}).",
-                        diagnostics=_challenge_diagnostics(response.text),
+                        f"לא ניתן לקרוא את המקור ({response.status_code}, {reason}); נדרשת בדיקה.",
+                        diagnostics=diagnostics,
                     )
                 response.raise_for_status()
                 if self.rate_limiter:
                     self.rate_limiter.reward()
                 requested_number = parse_qs(urlparse(url).query).get("b", [""])[0] if cacheable else ""
-                if cacheable and requested_number and "captcha" not in response.text.lower() and re.search(
+                if cacheable and requested_number and not diagnostics["challenge_script_marker"] and re.search(
                     rf"getRequest\(\s*{re.escape(requested_number)}\s*\)", response.text
                 ):
                     with self._stats_lock:

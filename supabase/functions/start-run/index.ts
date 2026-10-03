@@ -1,8 +1,9 @@
 import { corsHeaders, errorResponse, json } from '../_shared/http.ts'
 import { requireAdmin, serviceClient } from '../_shared/clients.ts'
 import { recoverAbandonedRuns } from './recovery.ts'
+import { collectionModeFor } from './collection.ts'
 
-interface StartRunBody { cityId: string; dateFrom: string; dateTo: string }
+interface StartRunBody { cityId: string; dateFrom: string; dateTo: string; collectionMode?: unknown }
 interface JerusalemStreet { municipal_code: string; municipal_name: string }
 interface ExistingApplication {
   application_number: string
@@ -80,6 +81,7 @@ Deno.serve(async (request) => {
     const db = serviceClient()
     const { data: city, error: cityError } = await db.from('cities').select('*').eq('id', body.cityId).eq('is_active', true).single()
     if (cityError || !city) throw new Error('הרשות שנבחרה אינה פעילה בפיילוט.')
+    const collectionMode = collectionModeFor(city.adapter_name, body.collectionMode)
 
     await expireAbandonedDispatches(db)
 
@@ -93,7 +95,8 @@ Deno.serve(async (request) => {
 
     const scanStrategy = city.adapter_name === 'complot' ? 'application-number' : 'source-default'
     const snapshot = {
-      city, dateFrom: body.dateFrom, dateTo: body.dateTo,
+      city: { ...city, adapter_config: { ...city.adapter_config, collection_mode: collectionMode } },
+      dateFrom: body.dateFrom, dateTo: body.dateTo, collectionMode,
       scanStrategy, createdAt: new Date().toISOString(),
     }
     const { data: run, error: runError } = await db.from('runs').insert({

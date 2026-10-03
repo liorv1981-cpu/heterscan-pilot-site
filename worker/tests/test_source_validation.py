@@ -47,16 +47,25 @@ def test_invalid_discovery_shape_is_not_an_empty_result(monkeypatch):
         adapter.close()
 
 
-def test_challenge_diagnostics_do_not_bypass_detection_or_reveal_script_values():
+def test_script_only_leaves_empty_detail_for_parser_without_revealing_values():
     body = '<title>Source</title><script>const secret="never log"; recaptcha()</script><div id="info-main"></div><div id="result-title-div-id"></div>'
     client = PublicHttpClient(delay_seconds=0)
     client.client.close()
     client.client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, text=body, request=request)))
     try:
-        with pytest.raises(AdapterReviewRequired) as caught:
-            client.request("GET", "https://example.test/source")
-        assert caught.value.diagnostics["request_detail_markup"] is True
-        assert caught.value.diagnostics["captcha_in_rendered_text"] is False
-        assert "never log" not in str(caught.value.diagnostics)
+        response = client.request("GET", "https://example.test/source")
+        diagnostics = response.extensions["source_diagnostics"]
+        assert diagnostics["request_detail_markup"] is True
+        assert diagnostics["captcha_in_rendered_text"] is False
+        assert diagnostics["challenge_script_marker"] is True
+        assert diagnostics["visible_challenge"] is False
+        assert "never log" not in str(diagnostics)
+        adapter = ComplotAdapter("8400", "רחובות", {"site_id": "22"})
+        try:
+            with pytest.raises(AdapterReviewRequired) as caught:
+                adapter._record_from_detail("20260001", response.text)
+            assert caught.value.diagnostics["parser_result"] == "parser_mismatch"
+        finally:
+            adapter.close()
     finally:
         client.close()

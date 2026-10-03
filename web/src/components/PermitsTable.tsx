@@ -21,6 +21,7 @@ export function PermitsTable({ run, permits, loading = false, error, downloading
     || (run.applicationsFound === 0 && run.coverageVerification !== 'verified_zero')
   ))
   const issuedCount = permits.filter((result) => result.isPermitIssued).length
+  const unknownPermitCount = permits.filter((result) => !result.isPermitIssued && result.permitVerification !== 'verified_not_issued').length
   const hideEmptyTable = isPartial && permits.length === 0
   const emptyMessage = run?.status === 'completed'
     ? run.coverageVerification === 'verified_zero' ? 'לא נמצאו בקשות בטווח שנבחר; תוצאת האפס אומתה.' : 'לא נמצאו בקשות בהרצה; תוצאת האפס לא אומתה עצמאית.'
@@ -34,6 +35,10 @@ export function PermitsTable({ run, permits, loading = false, error, downloading
           <ArrowDownToLine size={18} /> {downloading ? 'מכין הורדה…' : isPartial ? 'הורדת Excel חלקי' : 'הורדת Excel'}
         </button>
       </div>
+      {hasFinished && !loading && !error && unknownPermitCount > 0 ? <p className="report-note">
+        מצב ההיתר לא ידוע עבור {unknownPermitCount === 1 ? 'בקשה אחת' : `${unknownPermitCount.toLocaleString('he-IL')} בקשות`}.
+        {' '}{unknownPermitCount === 1 ? 'אין להסיק מכך שלא הוצא לה היתר.' : 'אין להסיק מכך שלא הוצא להן היתר.'}
+      </p> : null}
       {hasFinished && !reportReady ? <p className="report-note">הדוח עדיין אינו זמין. כפתור ההורדה יופעל כשהקובץ יהיה מוכן.</p> : null}
       {loading ? <p role="status">טוען את הבקשות וההיתרים של הסריקה שנבחרה…</p> : error ? <div className="global-error" role="alert">{error}<button type="button" onClick={onRetry}>ניסיון נוסף</button></div> : hideEmptyTable ? <p>{emptyMessage}</p> : <div className="table-shell" role="region" aria-label="טבלת תוצאות — ניתנת לגלילה" tabIndex={0}>
         <table>

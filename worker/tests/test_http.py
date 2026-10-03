@@ -5,7 +5,7 @@ import time
 from datetime import datetime, timezone
 from email.utils import format_datetime
 
-from heterscan.domain import AdapterRateLimited, AdapterReviewRequired
+from heterscan.domain import AdapterRateLimited
 from heterscan.http import AdaptiveRateLimiter, PublicHttpClient, parse_retry_after
 
 
@@ -159,7 +159,7 @@ def test_only_positive_search_results_are_cached_within_client() -> None:
     calls = 0
     responses = [
         (429, "blocked"),
-        (403, "captcha"),
+        (200, "<html></html>"),
         (200, '<a href="javascript:getRequest(20260005)">20260005</a>'),
     ]
 
@@ -176,8 +176,7 @@ def test_only_positive_search_results_are_cached_within_client() -> None:
     try:
         with pytest.raises(AdapterRateLimited):
             client.request("GET", url, attempts=1)
-        with pytest.raises(AdapterReviewRequired):
-            client.request("GET", url, attempts=1)
+        assert client.request("GET", url, attempts=1).status_code == 200
         assert client.request("GET", url).status_code == 200
         assert client.request("GET", url).status_code == 200
         assert calls == 3

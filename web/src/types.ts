@@ -14,7 +14,10 @@ export type RunStatus =
 export interface City {
   id: string
   name: string
+  adapterName?: string
 }
+
+export type CollectionMode = 'full_details' | 'public_summary'
 
 export interface Run {
   id: string
@@ -34,6 +37,7 @@ export interface Run {
   coverageVerification?: 'not_verified' | 'zero_not_verified' | 'partial' | 'verified_zero' | 'verified_nonzero'
   reportPath?: string
   errorMessage?: string
+  collectionMode?: CollectionMode
 }
 
 export interface Permit {
@@ -57,6 +61,7 @@ export interface StartRunInput {
   cityId: string
   dateFrom: string
   dateTo: string
+  collectionMode?: CollectionMode
 }
 
 export interface PilotApi {

@@ -17,6 +17,8 @@ HEADER_FONT = Font(color="FFFFFF", bold=True)
 
 def _display_status(row: dict[str, Any]) -> str:
     if row.get("details_available") is False:
+        if (row.get("raw_data") or {}).get("source_diagnostics", {}).get("collection_mode") == "public_summary":
+            return "סיכום בקשה בלבד — מצב היתר לא ידוע"
         return "פרטים חלקיים — נדרשת בדיקה"
     if row.get("is_permit_issued"):
         return row.get("permit_status_original") or "היתר הופק"
@@ -79,6 +81,9 @@ def build_report(
     coverage_status = run.get("coverage_verification") or (
         "zero_not_verified" if not results else "not_verified"
     )
+    collection_mode = (run.get("configuration_snapshot") or {}).get("collectionMode", "full_details")
+    unknown_permits = [row for row in results if not row.get("is_permit_issued")
+                       and row.get("permit_verification") != "verified_not_issued"]
     summary = [
         {
             "city_name": run["city_name"],
@@ -96,6 +101,8 @@ def build_report(
             "permit_count_meaning": "נספרו רק היתרים שאומתו; היתר שלא אומת אינו היתר שלא הופק",
             "units_total": len(units),
             "units_completed": sum(row["status"] == "completed" for row in units),
+            "collection_mode": "סיכומי בקשות בלבד" if collection_mode == "public_summary" else "בקשות ופרטים זמינים",
+            "unknown_permits": len(unknown_permits),
         }
     ]
     _sheet(
@@ -113,6 +120,8 @@ def build_report(
             ("permit_count_meaning", "משמעות ספירת היתרים"),
             ("units_total", "יחידות חיפוש"),
             ("units_completed", "יחידות שהושלמו"),
+            ("collection_mode", "היקף הסריקה"),
+            ("unknown_permits", "בקשות שמצב ההיתר שלהן לא ידוע"),
         ],
     )
     report_results = [
@@ -147,6 +156,21 @@ def build_report(
     _sheet(workbook, "היתרים שנמצאו", permits, common_headers)
     _sheet(workbook, "בקשות שאושרו", approvals, common_headers)
     _sheet(workbook, "כל התוצאות", report_results, common_headers)
+    if collection_mode == "public_summary":
+        field_labels = {"application_number": "מספר בקשה", "address": "כתובת", "submission_date": "תאריך הגשה",
+                        "building_file_number": "מספר תיק בניין", "block_number": "גוש", "parcel_number": "חלקה"}
+        provenance_rows = [
+            {"application_number": row.get("application_number"), "field": field_labels.get(field, field),
+             "value": row.get(field),
+             "origin": "סיכום החיפוש הציבורי", "detail_state": "לא התבקשו פרטים",
+             "source_url": evidence.get("source_url")}
+            for row in results
+            for field, evidence in (row.get("raw_data") or {}).get("field_provenance", {}).items()
+        ]
+        _sheet(workbook, "מקור שדות הסיכום", provenance_rows, [
+            ("application_number", "מספר בקשה"), ("field", "שדה"), ("value", "ערך"), ("origin", "מקור המידע"),
+            ("detail_state", "מצב פרטים"), ("source_url", "קישור מקור"),
+        ])
     _sheet(
         workbook,
         "יחידות חיפוש",

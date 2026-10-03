@@ -93,6 +93,8 @@ h1 { margin-bottom: 7px; color: var(--navy); font-size: clamp(28px, 3vw, 38px); 
 .primary-button { color: #fff; background: var(--blue); border: 1px solid var(--blue); box-shadow: 0 5px 14px rgba(9, 102, 232, .18); }
 .primary-button:hover:not(:disabled) { background: var(--blue-dark); border-color: var(--blue-dark); transform: translateY(-1px); }
 .primary-button:disabled { cursor: wait; opacity: .62; }
+.collection-mode-field { grid-column: 1 / -1; }
+.collection-mode-note { margin: 8px 0 0; font-size: 14px; color: var(--muted); line-height: 1.6; }
 .run-form-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
 .reset-button { min-height: 52px; padding: 0 14px; border: 1px solid var(--border-strong); border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; color: var(--navy); background: #fff; font-weight: 700; }
 .reset-button:hover { border-color: var(--blue); background: var(--blue-soft); }

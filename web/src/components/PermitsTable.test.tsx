@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 
-import { render, screen } from '@testing-library/react'
+import { cleanup, render, screen } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Permit, Run } from '../types'
 import { PermitsTable } from './PermitsTable'
+
+afterEach(cleanup)
 
 const run: Run = {
   id: 'run-1', cityId: '7900', cityName: 'פתח תקווה', dateFrom: '2025-12-01', dateTo: '2025-12-31',
@@ -27,6 +29,15 @@ const results: Permit[] = [
 ]
 
 describe('PermitsTable', () => {
+  it('counts unknown permits separately and does not count verified absence as unknown', () => {
+    const { getByText } = render(<PermitsTable run={run} permits={[
+      { ...results[1], id: 'unknown', permitVerification: 'unknown', permitNumber: 'לא ידוע' },
+      { ...results[1], id: 'negative', permitVerification: 'verified_not_issued' },
+      results[0],
+    ]} onDownload={vi.fn()} />)
+    expect(getByText(/מצב ההיתר לא ידוע עבור בקשה אחת/)).toBeVisible()
+    expect(getByText(/אין להסיק מכך שלא הוצא לה היתר/)).toBeVisible()
+  })
   it('shows pending applications together with issued permits and keeps the source link', () => {
     render(<PermitsTable run={run} permits={results} onDownload={vi.fn()} />)
 

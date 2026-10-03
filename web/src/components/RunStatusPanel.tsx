@@ -39,6 +39,7 @@ export function RunStatusPanel({ run, isStopping, onStop }: RunStatusPanelProps)
           <Icon size={20} className={!isDone && !hasIssue && !stopRequested ? 'spin' : ''} /> {stopRequested ? 'בקשת העצירה התקבלה' : unverifiedZero ? 'הסריקה הושלמה — תוצאת האפס לא אומתה' : statusCopy[run.status]}
         </p>
       </div>
+      {run.collectionMode === 'public_summary' ? <p className="status-note">סיכומי בקשות בלבד — דפי הפרטים אינם נבדקים ומצב ההיתרים אינו ידוע.</p> : null}
       <dl className="status-metrics">
         <div><dt>יחידות שנבדקו</dt><dd>
           <span dir="rtl" style={{ display: 'inline-flex', gap: '0.3em' }} aria-label={`${completedUnits.toLocaleString('he-IL')} מתוך ${run.unitsTotal.toLocaleString('he-IL')} יחידות חיפוש`}>
