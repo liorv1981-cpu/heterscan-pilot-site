@@ -37,7 +37,10 @@ def test_terminal_run_is_left_unchanged(monkeypatch):
 
 def test_cancellation_during_report_upload_wins_and_matches_workbook(monkeypatch):
     repository = Mock()
-    repository.get_run.side_effect = [{"status": "running"}, {"status": "cancelled"}]
+    repository.get_run.side_effect = [
+        {"status": "running", "city_name": "תל אביב-יפו", "date_from": "2026-01-01", "date_to": "2026-01-31"},
+        {"status": "cancelled", "city_name": "תל אביב-יפו", "date_from": "2026-01-01", "date_to": "2026-01-31"},
+    ]
     repository.run_results.return_value = []
     repository.run_units.return_value = []
     repository.progress_counts.return_value = {}

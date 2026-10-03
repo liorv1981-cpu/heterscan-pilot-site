@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import re
+from datetime import datetime, timezone
 from io import BytesIO
 from typing import Any
 from urllib.parse import urlsplit
@@ -13,6 +15,24 @@ from .source_links import stable_source_url
 
 HEADER_FILL = PatternFill("solid", fgColor="123B70")
 HEADER_FONT = Font(color="FFFFFF", bold=True)
+
+
+def report_filename(run: dict[str, Any], *, generated_at: datetime | None = None) -> str:
+    """Build a readable report name with its city, requested period and issue date."""
+    raw_city_name = str(run.get("city_name") or "").strip()
+    if not raw_city_name:
+        raise ValueError("Cannot create a report filename without a city name")
+    city_name = re.sub(r"[^A-Za-z0-9א-ת_-]+", "-", raw_city_name).strip("-_")
+    if not city_name:
+        raise ValueError("Cannot create a report filename without a usable city name")
+    issued_at = generated_at or datetime.now(timezone.utc)
+    if issued_at.tzinfo is None:
+        issued_at = issued_at.replace(tzinfo=timezone.utc)
+    issued_on = issued_at.astimezone(timezone.utc).date().isoformat()
+    return (
+        f"HETERSCAN_{city_name}_{run['date_from']}_{run['date_to']}"
+        f"_הופק-{issued_on}_{run['id']}.xlsx"
+    )
 
 
 def _display_status(row: dict[str, Any]) -> str:

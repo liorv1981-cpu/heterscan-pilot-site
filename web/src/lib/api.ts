@@ -39,6 +39,16 @@ const demoPermits: Omit<Permit, 'runId'>[] = [
 
 const demoRuns = new Map<string, Run>()
 
+function demoReportFilename(run: Run): string {
+  const city = run.cityName.normalize('NFKC').replace(/[^\p{L}\p{N}_-]+/gu, '-')
+  const dateParts = new Intl.DateTimeFormat('en', {
+    timeZone: 'Asia/Jerusalem', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date())
+  const part = (type: string) => dateParts.find((item) => item.type === type)?.value ?? ''
+  const issuedOn = `${part('year')}-${part('month')}-${part('day')}`
+  return `HETERSCAN_${city}_${run.dateFrom}_${run.dateTo}_הופק-${issuedOn}_${run.id}.xlsx`
+}
+
 function createLocalApi(): PilotApi {
   return {
     async listCities() { return citySeed },
@@ -113,7 +123,7 @@ function createLocalApi(): PilotApi {
     async downloadReport(run) {
       const link = document.createElement('a')
       link.href = `${import.meta.env.BASE_URL}HETERSCAN_DEMO_RESULTS.xlsx`
-      link.download = `HETERSCAN_DEMO_${run.cityName}_${run.dateFrom}_${run.dateTo}.xlsx`
+      link.download = demoReportFilename(run)
       document.body.append(link)
       link.click()
       link.remove()
