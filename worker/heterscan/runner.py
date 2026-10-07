@@ -133,7 +133,8 @@ def _collect_wave(adapter, units, date_from: date, date_to: date):
 def _expand_discovery(repository, run_id: str, unit, result: DiscoveryResult):
     """Queue observable candidates before recording uncertainty in their discovery."""
     inserted = repository.enqueue_units(run_id, result.units)
-    review = AdapterReviewRequired(result.review_reason) if result.review_reason else None
+    review = (AdapterReviewRequired(result.review_reason, diagnostics=result.diagnostics)
+              if result.review_reason else None)
     return inserted, (unit, [], review)
 
 

@@ -28,6 +28,7 @@ class DiscoveryResult:
 
     units: list[DiscoveredUnit]
     review_reason: str | None = None
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

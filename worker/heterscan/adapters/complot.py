@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import threading
 from datetime import date
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode, urlsplit
 
 from lxml import etree, html
 
@@ -15,7 +15,7 @@ from .base import Adapter
 
 class ComplotAdapter(Adapter):
     name = "complot"
-    version = "0.4.0"
+    version = "0.4.1"
     autocomplete_url = "https://handasi.complot.co.il/wsComplotPublicData/ComplotPublicData.asmx/GetBakashot"
 
     def __init__(self, city_id: str, city_name: str, config: dict, *, coordinator=None) -> None:
@@ -96,6 +96,30 @@ class ComplotAdapter(Adapter):
         return f"https://handasi.complot.co.il/magicscripts/mgrqispi.dll?{query}"
 
     def _detail_url(self, request_number: str) -> str:
+        # A display-only SPA hash is not an HTTP data endpoint. Use a municipal
+        # endpoint only after its ordinary public request has been documented.
+        template = self.config.get("public_detail_url_template")
+        if template:
+            try:
+                target = str(template).format(
+                    request_number=quote(request_number, safe=""),
+                    site_id=quote(str(self.config["site_id"]), safe=""),
+                )
+                parsed = urlsplit(target)
+                public_host = urlsplit(str(self.config.get("public_search_url", ""))).hostname
+                if (not self.config.get("public_detail_route_evidence")
+                        or "{request_number}" not in str(template)
+                        or parsed.scheme != "https" or not public_host
+                        or parsed.hostname != public_host or parsed.fragment
+                        or parsed.port not in {None, 443}
+                        or parsed.username or parsed.password):
+                    raise ValueError("unverified public detail endpoint")
+                return target
+            except (KeyError, IndexError, ValueError) as error:
+                raise AdapterReviewRequired(
+                    "מסלול הפרטים הציבורי אינו מוגדר עם ראיה תקינה; מצב ההיתר לא ידוע.",
+                    diagnostics={"detail_state": "route_unverified", "detail_requested": False},
+                ) from error
         query = urlencode(
             {
                 "appname": "cixpa",
@@ -125,6 +149,8 @@ class ComplotAdapter(Adapter):
         return self._number_list_url(request_number)
 
     def _public_source_url(self, request_number: str) -> str:
+        if self.config.get("public_detail_url_template") and self.config.get("public_search_url"):
+            return f"{str(self.config['public_search_url']).rstrip('/')}/#request/{quote(request_number, safe='')}"
         if self.config.get("public_search_url"):
             return self._summary_source_url(request_number)
         if str(self.config.get("site_id")) == "87":
@@ -181,7 +207,15 @@ class ComplotAdapter(Adapter):
         for tr in sections:
             cells = [self._text(cell) for cell in tr.xpath("./td")]
             if len(cells) >= 2 and cells[0]:
-                fields[cells[0]] = " | ".join(cell for cell in cells[1:] if cell)
+                value = " | ".join(cell for cell in cells[1:] if cell)
+                previous = fields.get(cells[0])
+                if previous and value and previous != value:
+                    raise AdapterReviewRequired(
+                        "שדה בפרטי המקור מכיל ערכים סותרים; נדרשת בדיקה.",
+                        diagnostics={"parser_result": "field_conflict", "field": cells[0],
+                                     "observed_values": [previous, value]},
+                    )
+                fields[cells[0]] = previous or value
         return fields
 
     def _table_rows(self, document, table_id: str) -> list[dict[str, str]]:
@@ -212,12 +246,12 @@ class ComplotAdapter(Adapter):
         }
 
     @staticmethod
-    def _field(fields: dict[str, str], *terms: str) -> str:
+    def _field(fields: dict[str, str], *terms: str, exact: bool = False) -> str:
         normalized = [(normalized_key(key), value) for key, value in fields.items()]
         for term in terms:
             key_term = normalized_key(term)
             for key, value in normalized:
-                if key_term in key:
+                if (key == key_term) if exact else (key_term in key):
                     return value
         return ""
 
@@ -261,6 +295,8 @@ class ComplotAdapter(Adapter):
         issues = []
         if invalid_labels:
             issues.append("תשובת החיפוש מכילה מזהי בקשה שלא ניתן לפענח")
+        if any(not number.startswith(prefix) or not number.startswith(year) for number in labels):
+            issues.append("תשובת החיפוש מכילה מזהים מחוץ לקידומת המבוקשת; הכיסוי דורש בדיקה")
         if too_long_lengths:
             observed = ", ".join(str(length) for length in too_long_lengths)
             issues.append(
@@ -270,14 +306,17 @@ class ComplotAdapter(Adapter):
         request_labels = [
             number
             for number in labels
-            if len(number) >= request_number_length
+            if len(number) >= 5
             and number.startswith(year)
             and number.startswith(prefix)
         ]
         units = [
             DiscoveredUnit(
                 unit_key=f"request:{number}",
-                payload={"mode": "request", "requestNumber": number},
+                payload={"mode": "request", "requestNumber": number,
+                         "discoveryEvidence": {"prefix": prefix, "rawLabel": number,
+                                               "configuredLength": request_number_length,
+                                               "identityVerified": False}},
             )
             for number in request_labels
         ]
@@ -294,7 +333,10 @@ class ComplotAdapter(Adapter):
         # all already present in this response. Splitting that final digit
         # would only repeat one request per child prefix.
         child_prefixes = list(dict.fromkeys(returned_child_prefixes))
-        if len(items) >= 10 and len(prefix) < request_number_length - 1:
+        # A capped response containing longer identifiers can still hide their
+        # siblings at the configured last digit. Continue to the observed depth.
+        observed_length = max([request_number_length, *(len(number) for number in request_labels)])
+        if len(items) >= 10 and len(prefix) < observed_length - 1:
             child_prefixes = list(
                 dict.fromkeys([*child_prefixes, *(f"{prefix}{digit}" for digit in range(10))])
             )
@@ -311,7 +353,14 @@ class ComplotAdapter(Adapter):
                 "לא ניתן לזהות מספרי בקשה באורך שהוגדר לרשות: "
                 f"הוגדר {request_number_length}, התקבל {observed}"
             )
-        return DiscoveryResult(units=units, review_reason="; ".join(issues) or None)
+        return DiscoveryResult(
+            units=units, review_reason="; ".join(issues) or None,
+            diagnostics={"prefix": prefix, "configured_length": request_number_length,
+                         "observed_labels": [clean_text(item.get("label")) if isinstance(item, dict)
+                                             else clean_text(item) for item in items],
+                         "response_capped": len(items) >= 10,
+                         "coverage_verified": False},
+        )
 
     def _record_from_detail(
         self, request_number: str, markup: str, *, cached: dict | None = None
@@ -366,20 +415,16 @@ class ComplotAdapter(Adapter):
                 "מבנה פרטי הבקשה חסר; מצב ההיתר לא ידוע.",
                 diagnostics={**diagnostics, "parser_result": "detail_missing"},
             )
-        permit_number = clean_text(self._field(fields, "מספר היתר")) or None
-        permit_date = parse_date(self._field(fields, "תאריך הפקת היתר", "תאריך היתר"))
+        permit_number = clean_text(self._field(fields, "מספר היתר", exact=True)) or None
+        if permit_number in {"0", "-", "—"}:
+            permit_number = None
+        permit_date = parse_date(self._field(fields, "תאריך הפקת היתר", "תאריך היתר", exact=True))
         explicit_status = clean_text(self._field(fields, "סטטוס", "מצב בקשה"))
         current_status = clean_text((current_event or {}).get("תיאור אירוע"))
         permit_status = explicit_status or current_status or None
         status_key = normalized_key(permit_status)
-        issued = bool(
-            (permit_number and permit_date)
-            or (
-                permit_date
-                and "היתר" in status_key
-                and any(term in status_key for term in ("הופק", "הוצא", "בתוקף"))
-            )
-        )
+        # Complot has no independently verified event-only issuance rule.
+        issued = bool(permit_number and permit_date)
         approval_date = parse_date(self._field(fields, "תאריך אישור", "תאריך החלטה"))
         is_approved = issued or bool(approval_date and "אושר" in status_key)
         mahut_nodes = document.xpath("//*[@id='mahut']")
@@ -394,6 +439,12 @@ class ComplotAdapter(Adapter):
             "requirements": requirements,
             "parcels": parcels,
             "meetings": meetings,
+            "date_basis": "submission_date",
+            "verification_scope": {
+                "discovery_coverage": "not_verified", "request_identity": "matched",
+                "details": "available", "status": "read" if permit_status else "unknown",
+                "permit": "verified_issued" if issued else "unknown",
+            },
         }
         if isinstance(cached.get("public_summary"), dict):
             raw_data["public_summary"] = cached["public_summary"]
@@ -413,7 +464,7 @@ class ComplotAdapter(Adapter):
             parcel_number=(
                 self._joined_values(parcels, "מספר חלקה") or clean_text(cached.get("parcel")) or None
             ),
-            application_type=clean_text(self._field(fields, "סוג בקשה")) or None,
+            application_type=clean_text(self._field(fields, "סוג הבקשה", "סוג בקשה")) or None,
             work_description=(mahut or clean_text(self._field(fields, "תיאור הבקשה", "מהות הבקשה")) or None),
             submission_date=submitted,
             approval_date=approval_date,
@@ -470,8 +521,21 @@ class ComplotAdapter(Adapter):
                 block_number=row["block"] or None, parcel_number=row["parcel"] or None,
                 source_url=self._summary_source_url(request_number), source_reference=request_number,
                 adapter_name=self.name, adapter_version=self.version,
-                raw_data={"public_summary": row, "details_available": False}, details_available=False,
+                raw_data={"public_summary": row, "details_available": False,
+                          "date_basis": "submission_date",
+                          "verification_scope": {"discovery_coverage": "not_verified",
+                              "request_identity": "summary_matched", "details": "unavailable",
+                              "status": "unknown", "permit": "unknown"}}, details_available=False,
             )
+            summary.raw_data["field_provenance"] = {
+                field: {"kind": "public_search_summary", "source_url": summary_url,
+                        "display_url": summary.source_url}
+                for field, value in (("application_number", request_number), ("address", summary.address),
+                                     ("submission_date", submitted),
+                                     ("building_file_number", summary.building_file_number),
+                                     ("block_number", summary.block_number), ("parcel_number", summary.parcel_number))
+                if value
+            }
             if self.collection_mode == "public_summary":
                 diagnostics = {
                     **getattr(summary_response, "extensions", {}).get("source_diagnostics", {}),
@@ -479,29 +543,52 @@ class ComplotAdapter(Adapter):
                     "parser_result": "summary_parsed", "detail_state": "not_requested",
                 }
                 summary.raw_data["source_diagnostics"] = diagnostics
-                summary.raw_data["field_provenance"] = {
-                    field: {"kind": "public_search_summary", "source_url": summary.source_url}
-                    for field, value in (("application_number", request_number), ("address", summary.address),
-                                         ("submission_date", submitted),
-                                         ("building_file_number", summary.building_file_number),
-                                         ("block_number", summary.block_number), ("parcel_number", summary.parcel_number))
-                    if value
-                }
                 raise AdapterReviewRequired(
                     "נאסף סיכום הבקשה בלבד; פרטים ומצב היתר לא אומתו.",
                     diagnostics=diagnostics, partial_records=[summary],
                 )
             response = None
+            detail_url = None
             try:
-                response = self.client.request("GET", self._detail_url(request_number))
+                detail_url = self._detail_url(request_number)
+                response = self.client.request("GET", detail_url)
                 markup = response.text
                 record = self._record_from_detail(request_number, markup, cached={
                     **unit.payload, "submissionDate": row["submission_date"], "address": row["address"],
+                    "buildingFile": row["building_file"], "block": row["block"], "parcel": row["parcel"],
                     "public_summary": row,
                 })
                 record.raw_data["source_diagnostics"] = {
                     **getattr(response, "extensions", {}).get("source_diagnostics", {}),
-                    "parser_result": "parsed",
+                    "parser_result": "parsed", "detail_url": detail_url,
+                    "detail_route": "documented_public_endpoint" if self.config.get("public_detail_url_template")
+                                    else "legacy_shared_dll",
+                    "detail_route_evidence": self.config.get("public_detail_route_evidence"),
+                }
+                record.raw_data["field_provenance"] = {
+                    field: {"kind": "public_request_detail", "source_url": detail_url}
+                    for field, value in (("application_number", request_number), ("address", record.address),
+                                         ("submission_date", record.submission_date),
+                                         ("permit_number", record.permit_number),
+                                         ("permit_issue_date", record.permit_issue_date),
+                                         ("permit_status_original", record.permit_status_original)) if value
+                }
+                for field, detail_value, record_value in (
+                    ("building_file_number", self._field(record.raw_data["detail"], "מספר תיק בניין"),
+                     record.building_file_number),
+                    ("block_number", self._joined_values(record.raw_data["parcels"], "מספר גוש"), record.block_number),
+                    ("parcel_number", self._joined_values(record.raw_data["parcels"], "מספר חלקה"), record.parcel_number),
+                    ("address", record.raw_data["metadata"].get("address"), record.address),
+                    ("submission_date", record.raw_data["metadata"].get("submission_date"), record.submission_date),
+                ):
+                    if record_value:
+                        record.raw_data["field_provenance"][field] = {
+                            "kind": "public_request_detail" if detail_value else "public_search_summary",
+                            "source_url": detail_url if detail_value else summary_url,
+                        }
+                record.raw_data["raw_field_provenance"] = {
+                    key: {"source_url": detail_url, "value": value}
+                    for key, value in record.raw_data["detail"].items()
                 }
                 # The validator compares detail and public-search dates before
                 # any record can be removed from the requested range.
@@ -512,15 +599,22 @@ class ComplotAdapter(Adapter):
                         **getattr(response, "extensions", {}).get("source_diagnostics", {}),
                         **error.diagnostics,
                     }
+                error.diagnostics = {**error.diagnostics, "requested_number": request_number,
+                                     "summary_url": summary_url, "detail_url": detail_url,
+                                     "date_basis": "submission_date"}
                 summary.raw_data["source_diagnostics"] = dict(error.diagnostics)
                 error.partial_records = [summary]
                 raise
             except AdapterRateLimited:
                 raise
             except RuntimeError as error:
+                diagnostics = {"detail_error": str(error)[:500], "detail_url": detail_url,
+                               "requested_number": request_number, "summary_url": summary_url,
+                               "detail_state": "unavailable"}
+                summary.raw_data["source_diagnostics"] = diagnostics
                 raise AdapterReviewRequired(
                     "פרטי הבקשה לא נטענו; נשמר המידע הפומבי מתוצאת החיפוש.",
-                    diagnostics={"detail_error": str(error)[:500]}, partial_records=[summary],
+                    diagnostics=diagnostics, partial_records=[summary],
                 ) from error
 
         # Backward compatibility for runs created by the former street strategy.

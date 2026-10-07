@@ -92,6 +92,33 @@ def test_complot_starts_at_shared_host_floor_and_one_request_lane() -> None:
         adapter.close()
 
 
+def test_kfar_saba_detail_preserves_application_type_without_inventing_a_permit(monkeypatch) -> None:
+    monkeypatch.setattr(complot_module, "PublicHttpClient", _SharedFakeClient)
+    adapter = ComplotAdapter("6900", "כפר סבא", {"site_id": "13"})
+    try:
+        for label in ("סוג הבקשה", "סוג בקשה"):
+            record = adapter._record_from_detail("20260031", f"""
+                <div id="result-title-div-id">
+                  מספר הבקשה: 20260031 כתובת: יצחק שדה 6 כפר סבא תאריך הגשה: 15/01/2026
+                </div>
+                <div id="info-main"><table>
+                  <tr><td>{label}</td><td>בקשה להיתר- רישוי מסלול הקלות ושימוש חורג</td></tr>
+                  <tr><td>מספר היתר</td><td></td></tr>
+                  <tr><td>תאריך הפקת היתר</td><td></td></tr>
+                </table></div>
+                <table id="table-events">
+                  <tr><th>סוג אירוע</th><th>תיאור אירוע</th></tr>
+                  <tr><td>נוכחי</td><td>הודעה למבקש/עורך</td></tr>
+                </table>
+            """)
+            assert record.application_type == "בקשה להיתר- רישוי מסלול הקלות ושימוש חורג"
+            assert record.permit_status_original == "הודעה למבקש/עורך"
+            assert record.permit_number is None and record.permit_issue_date is None
+            assert record.is_permit_issued is False
+    finally:
+        adapter.close()
+
+
 def test_collect_returns_every_in_range_application_and_reuses_one_client(monkeypatch) -> None:
     _SharedFakeClient.instances.clear()
     monkeypatch.setattr(complot_module, "PublicHttpClient", _SharedFakeClient)
@@ -232,8 +259,13 @@ def test_shorter_autocomplete_hints_continue_prefix_discovery(monkeypatch) -> No
     result = adapter.collect(unit, date(2026, 1, 1), date(2026, 12, 31))
 
     assert isinstance(result, DiscoveryResult)
-    assert [item.unit_key for item in result.units] == [
+    assert [item.unit_key for item in result.units if item.payload["mode"] == "discover-prefix"] == [
         f"discover-prefix:2026{digit}" for digit in range(10)
+    ]
+    # Short numeric labels can be real requests as well as prefix hints.
+    # Verify them through exact number search while still traversing children.
+    assert [item.unit_key for item in result.units if item.payload["mode"] == "request"] == [
+        f"request:2026{digit}" for digit in range(9)
     ]
 
 

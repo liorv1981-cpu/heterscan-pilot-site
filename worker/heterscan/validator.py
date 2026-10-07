@@ -50,11 +50,11 @@ def _address(value: object, city_name: str) -> str:
     return address[: -len(city)].strip() if city and address.endswith(city) else address
 
 
-def _field(fields: dict, *terms: str) -> str:
+def _field(fields: dict, *terms: str, exact: bool = False) -> str:
     for term in terms:
         target = normalized_key(term)
         for key, value in fields.items():
-            if target in normalized_key(key):
+            if (normalized_key(key) == target) if exact else (target in normalized_key(key)):
                 return clean_text(value)
     return ""
 
@@ -186,10 +186,9 @@ def _complot_issues(record: ApplicationRecord, unit: SearchUnit, city_name: str)
             if (_address(metadata["address"], city_name) != _address(summary["address"], city_name)
                     and not compatible_address):
                 issues.append("detail_address_mismatch")
-        raw_permit = _permit_number(_field(detail, "מספר היתר"))
-        raw_date = parse_date(_field(detail, "תאריך הפקת היתר", "תאריך היתר"))
-        raw_status = _field(detail, "סטטוס", "מצב בקשה") or record.permit_status_original
-        explicit_issued = bool(raw_date and (raw_permit or _issued_status(raw_status)))
+        raw_permit = _permit_number(_field(detail, "מספר היתר", exact=True))
+        raw_date = parse_date(_field(detail, "תאריך הפקת היתר", "תאריך היתר", exact=True))
+        explicit_issued = bool(raw_date and raw_permit)
         if bool(record.is_permit_issued) != explicit_issued:
             issues.append("permit_issuance_mismatch")
         if record.permit_number and _permit_number(record.permit_number) != raw_permit:
