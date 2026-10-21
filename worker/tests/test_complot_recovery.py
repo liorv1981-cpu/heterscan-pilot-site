@@ -32,6 +32,27 @@ def summary_markup(case):
             '<td></td><td></td></tr></tbody></table>')
 
 
+def test_source_unavailable_keeps_summary_without_claiming_identity_mismatch_or_citywide_block(monkeypatch):
+    adapter = ComplotAdapter("2600", "אילת", {"site_id": "56"})
+    case = CASES[0]
+    bodies = iter([summary_markup(case), "<p>מצטערים, לא ניתן להציג את המידע המבוקש.</p>",
+                   summary_markup(case), detail_markup(case)])
+    monkeypatch.setattr(adapter.client, "request", lambda *args: SimpleNamespace(text=next(bodies)))
+    unit = SearchUnit("u", "r", 1, "request", {"mode": "request", "requestNumber": case["number"]})
+    try:
+        with pytest.raises(AdapterReviewRequired) as failure:
+            adapter.collect(unit, *JANUARY)
+        assert failure.value.diagnostics["classification"] == "detail_unavailable"
+        assert failure.value.diagnostics["visible_challenge"] is False
+        assert failure.value.partial_records[0].application_number == case["number"]
+        assert not failure.value.partial_records[0].details_available
+        assert not failure.value.partial_records[0].is_permit_issued
+        [record] = adapter.collect(unit, *JANUARY)
+        assert record.details_available  # One statutory restriction cannot disable all later details.
+    finally:
+        adapter.close()
+
+
 @pytest.mark.parametrize("case", CASES, ids=lambda c: f'{c["city_id"]}-{c["number"]}')
 def test_preserved_missed_permits_and_negative_controls_through_collector_and_validator(case, monkeypatch):
     adapter = ComplotAdapter(case["city_id"], case["city_name"], {"site_id": case["site_id"]})

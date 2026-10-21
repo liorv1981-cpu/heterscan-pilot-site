@@ -53,3 +53,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run heter-scan-manual-worker.yml --ref "${{ github.ref_name }}" -f run_id="${{ inputs.run_id }}"
+      - name: Verify collection outcome and published report
+        if: steps.worker_local.outputs.exit_code == '0'
+        shell: powershell
+        env:
+          RUN_ID: ${{ inputs.run_id }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          & 'C:\HETERSCAN\Python312\python.exe' -m heterscan.check_run --run-id "$env:RUN_ID"
+          exit $LASTEXITCODE

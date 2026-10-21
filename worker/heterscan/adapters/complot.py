@@ -15,7 +15,7 @@ from .base import Adapter
 
 class ComplotAdapter(Adapter):
     name = "complot"
-    version = "0.4.1"
+    version = "0.4.2"
     autocomplete_url = "https://handasi.complot.co.il/wsComplotPublicData/ComplotPublicData.asmx/GetBakashot"
 
     def __init__(self, city_id: str, city_name: str, config: dict, *, coordinator=None) -> None:
@@ -374,6 +374,17 @@ class ComplotAdapter(Adapter):
                 "פרטי הבקשה ריקים או פגומים; מצב ההיתר לא ידוע.",
                 diagnostics={**diagnostics, "parser_result": "detail_missing"},
             ) from error
+        source_excerpt = clean_text(" ".join(document.xpath(
+            ".//text()[not(ancestor::script or ancestor::style or ancestor::form)]"
+        )))[:500]
+        if (not diagnostics["request_detail_markup"]
+                and "לא ניתן להציג את המידע המבוקש" in source_excerpt):
+            raise AdapterReviewRequired(
+                "המקור אינו מציג את פרטי הבקשה; סיכום החיפוש נשמר ומצב ההיתר לא ידוע.",
+                diagnostics={**diagnostics, "classification": "detail_unavailable",
+                             "parser_result": "detail_missing", "detail_state": "source_unavailable",
+                             "requested_number": request_number, "source_excerpt": source_excerpt},
+            )
         metadata = self._detail_metadata(document)
         observed_number = re.sub(r"\D", "", metadata.get("request_number", ""))
         if observed_number != re.sub(r"\D", "", request_number):
