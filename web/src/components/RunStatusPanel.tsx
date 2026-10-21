@@ -41,7 +41,7 @@ export function RunStatusPanel({ run, isStopping, onStop }: RunStatusPanelProps)
       </div>
       {run.collectionMode === 'public_summary' ? <p className="status-note">סיכומי בקשות בלבד — דפי הפרטים אינם נבדקים ומצב ההיתרים אינו ידוע.</p> : null}
       <dl className="status-metrics">
-        <div><dt>יחידות שנבדקו</dt><dd>
+        <div><dt>יחידות שהטיפול בהן הסתיים</dt><dd>
           <span dir="rtl" style={{ display: 'inline-flex', gap: '0.3em' }} aria-label={`${completedUnits.toLocaleString('he-IL')} מתוך ${run.unitsTotal.toLocaleString('he-IL')} יחידות חיפוש`}>
             <bdi dir="ltr">{completedUnits.toLocaleString('he-IL')}</bdi>
             <span aria-hidden="true">/</span>
@@ -59,6 +59,7 @@ export function RunStatusPanel({ run, isStopping, onStop }: RunStatusPanelProps)
         </div>
         <strong>{progress}%</strong>
       </div>
+      {isFinished && hasIssue ? <p className="status-note">100% מציין סיום טיפול ביחידות, כולל יחידות שלא ניתן היה לבדוק. הוא אינו מעיד שכל המידע נאסף.</p> : null}
       {isActive ? (
         <div className="stop-controls" aria-live="polite">
           {stopRequested ? (

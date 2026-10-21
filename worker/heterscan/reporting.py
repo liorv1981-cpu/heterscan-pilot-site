@@ -129,6 +129,9 @@ def build_report(
             "units_completed": sum(row["status"] == "completed" for row in units),
             "collection_mode": "סיכומי בקשות בלבד" if collection_mode == "public_summary" else "בקשות ופרטים זמינים",
             "unknown_permits": len(unknown_permits),
+            "full_details": sum(row.get("details_available") is not False for row in results),
+            "partial_details": sum(row.get("details_available") is False for row in results),
+            "collection_issue": run.get("error_message"),
         }
     ]
     _sheet(
@@ -148,6 +151,9 @@ def build_report(
             ("units_completed", "יחידות שהושלמו"),
             ("collection_mode", "היקף הסריקה"),
             ("unknown_permits", "בקשות שמצב ההיתר שלהן לא ידוע"),
+            ("full_details", "בקשות עם פרטים מלאים"),
+            ("partial_details", "בקשות ללא פרטים מלאים"),
+            ("collection_issue", "מגבלות האיסוף"),
         ],
     )
     report_results = [

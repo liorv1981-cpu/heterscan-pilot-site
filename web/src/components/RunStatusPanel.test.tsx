@@ -21,6 +21,13 @@ const activeRun: Run = {
 }
 
 describe('RunStatusPanel cancellation controls', () => {
+  it('does not present terminal review work as successfully checked source units', () => {
+    render(<RunStatusPanel run={{ ...activeRun, status: 'requires_review', unitsCompleted: 40 }} isStopping={false} onStop={vi.fn()} />)
+    expect(screen.queryByText('יחידות שנבדקו')).toBeNull()
+    expect(screen.getByText('יחידות שהטיפול בהן הסתיים')).toBeTruthy()
+    expect(screen.getByText(/כולל יחידות שלא ניתן היה לבדוק/)).toBeTruthy()
+  })
+
   it('requires an explicit second click before requesting cancellation', () => {
     const onStop = vi.fn().mockResolvedValue(undefined)
     render(<RunStatusPanel run={activeRun} isStopping={false} onStop={onStop} />)

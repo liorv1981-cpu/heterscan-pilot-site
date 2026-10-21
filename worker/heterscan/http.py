@@ -212,6 +212,11 @@ class AdaptiveRateLimiter:
                 self._current_rate = min(self._target_rate, self._current_rate * 1.15)
                 self._success_streak = 0
 
+    def reset_success_streak(self) -> None:
+        """An unreadable HTTP 200 must not contribute to faster source traffic."""
+        with self._lock:
+            self._success_streak = 0
+
     def snapshot(self) -> dict[str, float | int]:
         with self._lock:
             return {
@@ -360,7 +365,10 @@ class PublicHttpClient:
                     )
                 response.raise_for_status()
                 if self.rate_limiter:
-                    self.rate_limiter.reward()
+                    if category == "detail" and not diagnostics["request_detail_markup"]:
+                        self.rate_limiter.reset_success_streak()
+                    else:
+                        self.rate_limiter.reward()
                 requested_number = parse_qs(urlparse(url).query).get("b", [""])[0] if cacheable else ""
                 if cacheable and requested_number and not diagnostics["challenge_script_marker"] and re.search(
                     rf"getRequest\(\s*{re.escape(requested_number)}\s*\)", response.text

@@ -13,6 +13,7 @@ from .domain import AdapterRateLimited, AdapterReviewRequired, ApplicationRecord
 from .reporting import build_report, report_storage_filename
 from .supabase import SupabaseRepository
 from .validator import validate_records
+from .outcome import collection_outcome
 
 ADAPTERS = {"jerusalem": JerusalemAdapter, "tel_aviv": TelAvivAdapter, "complot": ComplotAdapter}
 
@@ -184,6 +185,8 @@ def _finalize_report(
         "status": final_status,
         "coverage_verification": coverage_verification,
     }
+    outcome = collection_outcome(report_run, results, units)
+    report_run["error_message"] = outcome["message"] or current.get("error_message")
     report_bytes, checksum = build_report(report_run, results, units)
     storage_path = f"{run_id}/{report_storage_filename(report_run)}"
     repository.upload_report(storage_path, report_bytes)
@@ -195,6 +198,7 @@ def _finalize_report(
             **counts,
             "status": final_status,
             "coverage_verification": coverage_verification,
+            "error_message": report_run["error_message"],
             "report_path": storage_path,
             "completed_at": _iso_now(),
             "heartbeat_at": _iso_now(),
@@ -209,7 +213,8 @@ def _finalize_report(
         # with the truthful terminal status before exposing the download.
         return _finalize_report(repository, run_id, city_id, date_from, date_to, "cancelled")
     event = "worker_cancelled" if final_status == "cancelled" else "worker_completed"
-    repository.log(run_id, "info", event, {"status": final_status, **counts})
+    repository.log(run_id, "warning" if outcome["message"] else "info", event,
+                   {"status": final_status, **counts, "collection_outcome": outcome})
     return 0
 
 

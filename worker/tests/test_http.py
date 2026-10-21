@@ -9,6 +9,27 @@ from heterscan.domain import AdapterRateLimited
 from heterscan.http import AdaptiveRateLimiter, PublicHttpClient, parse_retry_after
 
 
+def test_http_200_unavailable_details_do_not_accelerate_source_requests(monkeypatch):
+    limiter = AdaptiveRateLimiter(requests_per_second=0.25, target_requests_per_second=1,
+                                  minimum_requests_per_second=0.25, maximum_requests_per_second=1,
+                                  success_window=2)
+    monkeypatch.setattr(limiter, "wait", lambda: None)
+    monkeypatch.setattr(limiter, "release", lambda: None)
+    client = PublicHttpClient(rate_limiter=limiter)
+    client.client.close()
+    client.client = httpx.Client(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, text="<p>לא ניתן להציג את המידע המבוקש</p>", request=request)
+    ))
+    try:
+        for _ in range(10):
+            client.request("GET", "https://example.test/source?prgname=GetBakashotByNumber")
+            client.request("GET", "https://example.test/source?prgname=GetBakashaFile")
+        assert limiter.snapshot()["requests_per_second"] == 0.25
+        assert limiter.snapshot()["penalties"] == 0  # Unavailable is not an invented 429.
+    finally:
+        client.close()
+
+
 def test_rate_limiter_reduces_rate_after_source_penalty() -> None:
     limiter = AdaptiveRateLimiter(
         requests_per_second=2.0,
