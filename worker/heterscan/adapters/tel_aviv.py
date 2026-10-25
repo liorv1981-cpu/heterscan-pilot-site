@@ -11,12 +11,13 @@ from .base import Adapter
 
 class TelAvivAdapter(Adapter):
     name = "tel_aviv"
-    version = "0.2.0"
+    version = "0.2.1"
     query_url = "https://gisn.tel-aviv.gov.il/ArcGIS/rest/services/IView2/MapServer/772/query"
     fields = ",".join(
         [
             "oid_permit", "request_num", "permission_date", "permission_num", "open_request",
-            "building_num", "sug_bakasha", "tochen_bakasha", "request_stage", "ms_tik_binyan",
+            "building_num", "sug_bakasha", "tochen_bakasha", "request_stage", "building_stage",
+            "ms_tik_binyan",
             "addresses", "sivug_makor",
         ]
     )
@@ -72,7 +73,7 @@ class TelAvivAdapter(Adapter):
                             approval_confidence="high" if issued else None,
                             permit_number=permit_number,
                             permit_issue_date=permit_date,
-                            permit_status_original=clean_text(attrs.get("request_stage")) or None,
+                            permit_status_original=clean_text(attrs.get("building_stage")) or None,
                             is_permit_issued=issued,
                             permit_confidence="high" if issued else None,
                             source_url=tel_aviv_source_url(request_number),
