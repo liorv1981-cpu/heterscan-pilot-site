@@ -188,7 +188,9 @@ def _finalize_report(
     outcome = collection_outcome(report_run, results, units)
     report_run["error_message"] = outcome["message"] or current.get("error_message")
     report_bytes, checksum = build_report(report_run, results, units)
-    storage_path = f"{run_id}/{report_storage_filename(report_run)}"
+    # Keep earlier published workbooks available after continuing a scan.
+    report_folder = f"{run_id}/{checksum}" if current.get("report_path") else run_id
+    storage_path = f"{report_folder}/{report_storage_filename(report_run)}"
     repository.upload_report(storage_path, report_bytes)
     repository.save_report_metadata(run_id, storage_path, checksum, len(report_bytes))
     counts = repository.progress_counts(run_id)
@@ -218,7 +220,7 @@ def _finalize_report(
     return 0
 
 
-def run(run_id: str) -> int:
+def run(run_id: str, *, resume_rate_limited: bool = False) -> int:
     repository = SupabaseRepository()
     adapter = None
     worker_id = f"{socket.gethostname()}:{os.getpid()}"
@@ -232,6 +234,16 @@ def run(run_id: str) -> int:
                 return 0
             return _finalize_report(repository, run_id, initial["city_id"],
                                     _parse_date(initial["date_from"]), _parse_date(initial["date_to"]), "cancelled")
+        if resume_rate_limited:
+            city = initial["configuration_snapshot"]["city"]
+            if city["adapter_name"] != "complot" or not initial.get("report_path"):
+                raise ValueError("Continuation requires a published Complot scan")
+            if initial["status"] == "requires_review":
+                if not repository.reserve_rate_limited_run(run_id, _iso_now()):
+                    raise RuntimeError("The run changed before it could be reserved")
+                initial["status"] = "safely_stopped"
+            elif initial["status"] not in {"safely_stopped", "running"}:
+                raise ValueError("This scan is not eligible for a rate-limit continuation")
         if initial["status"] not in {"created", "dispatching", "running", "safely_stopped"}:
             return 0
         claimed = repository._rest(
@@ -251,6 +263,14 @@ def run(run_id: str) -> int:
         if not adapter_class:
             raise RuntimeError(f"Unknown adapter {city['adapter_name']}")
         adapter_config = city.get("adapter_config") or {}
+        if resume_rate_limited:
+            adapter_config = {
+                **adapter_config,
+                "initial_requests_per_second": min(float(adapter_config.get("initial_requests_per_second", 0.25)), 0.1),
+                "target_requests_per_second": min(float(adapter_config.get("target_requests_per_second", 1.0)), 0.1),
+                "maximum_requests_per_second": min(float(adapter_config.get("maximum_requests_per_second", 1.0)), 0.1),
+                "minimum_requests_per_second": min(float(adapter_config.get("minimum_requests_per_second", 0.25)), 0.05),
+            }
         adapter = (adapter_class(city["id"], city["name_he"], adapter_config, coordinator=repository)
                    if city["adapter_name"] == "complot"
                    else adapter_class(city["id"], city["name_he"], adapter_config))
@@ -259,6 +279,16 @@ def run(run_id: str) -> int:
 
         if repository.cancellation_requested(run_id):
             return _finalize_report(repository, run_id, city["id"], date_from, date_to, "cancelled")
+
+        if resume_rate_limited:
+            requeued = repository.requeue_rate_limited_units(run_id)
+            counts = repository.progress_counts(run_id)
+            if not repository.update_owned_run(run_id, worker_id, counts):
+                if repository.cancellation_requested(run_id):
+                    return _finalize_report(repository, run_id, city["id"], date_from, date_to, "cancelled")
+                raise RuntimeError("The worker lost ownership while preparing the continuation")
+            repository.log(run_id, "info", "rate_limited_units_requeued", {"units": requeued})
+            print(f"Requeued {requeued} unfinished rate-limited units", flush=True)
 
         rate_limited_windows = 0
         finalized_since_cooldown = 0
@@ -522,8 +552,15 @@ def run(run_id: str) -> int:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run one manually-created HETERSCAN scan")
     parser.add_argument("--run-id", default=os.environ.get("RUN_ID"), required="RUN_ID" not in os.environ)
+    parser.add_argument("--resume-rate-limited", action="store_true")
     args = parser.parse_args()
-    sys.exit(run(args.run_id))
+    # The existing workflow can run this branch without a workflow-file change.
+    # Restrict its default continuation to the designated scan and branch.
+    if (os.environ.get("GITHUB_ACTIONS") == "true"
+            and os.environ.get("GITHUB_REF_NAME") == "codex/continue-petah-tikva-45cdb072"
+            and args.run_id == "45cdb072-0f30-47d2-a3a6-11aab082820a"):
+        args.resume_rate_limited = True
+    sys.exit(run(args.run_id, resume_rate_limited=args.resume_rate_limited))
 
 
 if __name__ == "__main__":

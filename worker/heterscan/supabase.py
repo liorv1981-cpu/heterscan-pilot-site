@@ -13,6 +13,9 @@ from .domain import ApplicationRecord, DiscoveredUnit, SearchUnit
 from .normalize import content_hash, record_identity
 
 
+RATE_LIMIT_REVIEW_REASON = "המקור הגביל פניות חוזרות (429); היחידה לא נבדקה."
+
+
 def _json_safe(value: Any) -> Any:
     """Convert nested municipal payloads and evidence into JSON-native values."""
     if isinstance(value, (date, datetime)):
@@ -264,9 +267,37 @@ class SupabaseRepository:
         self._rest(
             "PATCH",
             f"run_units?run_id=eq.{quote(run_id)}&status=in.(pending,processing)",
-            json={"status": "requires_review", "error_message": "המקור הגביל פניות חוזרות (429); היחידה לא נבדקה.",
+            json={"status": "requires_review", "error_message": RATE_LIMIT_REVIEW_REASON,
                   "completed_at": "now", "claimed_by": None, "claimed_at": None},
         )
+
+    @staticmethod
+    def _rate_limited_units_path(run_id: str) -> str:
+        reason = quote(f'"{RATE_LIMIT_REVIEW_REASON}"', safe="")
+        return f"run_units?run_id=eq.{quote(run_id)}&status=eq.requires_review&error_message=eq.{reason}"
+
+    def reserve_rate_limited_run(self, run_id: str, heartbeat_at: str) -> bool:
+        if not self._rest("GET", self._rate_limited_units_path(run_id) + "&select=id&limit=1").json():
+            raise ValueError("No unprocessed units marked for source rate limiting")
+        # The existing one-active-run index prevents reopening while another
+        # scan is active. Reserve before making any units claimable.
+        rows = self._rest(
+            "PATCH", f"runs?id=eq.{quote(run_id)}&status=eq.requires_review"
+            "&lock_owner=is.null&lock_expires_at=is.null&cancel_requested_at=is.null",
+            headers={"Prefer": "return=representation"},
+            json={"status": "safely_stopped", "heartbeat_at": heartbeat_at,
+                  "completed_at": None, "error_message": None},
+        ).json()
+        return bool(rows)
+
+    def requeue_rate_limited_units(self, run_id: str) -> int:
+        rows = self._rest(
+            "PATCH", self._rate_limited_units_path(run_id) + "&select=id",
+            headers={"Prefer": "return=representation"},
+            json={"status": "pending", "available_at": "now", "completed_at": None,
+                  "error_message": None, "claimed_by": None, "claimed_at": None},
+        ).json()
+        return len(rows)
 
     def progress_summary(self, run_id: str) -> dict[str, int]:
         rows = self._rest("POST", "rpc/get_run_progress", json={"p_run_id": run_id}).json()
