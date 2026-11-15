@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import json
 import os
 import socket
 import sys
@@ -523,6 +524,30 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run one manually-created HETERSCAN scan")
     parser.add_argument("--run-id", default=os.environ.get("RUN_ID"), required="RUN_ID" not in os.environ)
     args = parser.parse_args()
+    if (os.environ.get("GITHUB_ACTIONS") == "true"
+            and os.environ.get("GITHUB_REF_NAME") == "codex/read-complot-cooldown-45cdb072"
+            and args.run_id == "45cdb072-0f30-47d2-a3a6-11aab082820a"):
+        repository = SupabaseRepository()
+        try:
+            events = repository._rest(
+                "GET", "run_logs", params={
+                    "run_id": f"eq.{args.run_id}",
+                    "event": "in.(source_rate_limited,source_rate_limit_breaker)",
+                    "select": "created_at,event,context", "order": "created_at.desc", "limit": 12,
+                },
+            ).json()
+            slots = repository._rest(
+                "GET", "source_rate_slots", params={
+                    "origin": "eq.handasi.complot.co.il",
+                    "select": "blocked_until,next_request_at",
+                },
+            ).json()
+            print("SOURCE_COOLDOWN " + json.dumps({
+                "observed_at": _iso_now(), "slots": slots, "events": events,
+            }), flush=True)
+        finally:
+            repository.close()
+        return
     sys.exit(run(args.run_id))
 
 
