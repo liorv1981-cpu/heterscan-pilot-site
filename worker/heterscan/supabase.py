@@ -271,13 +271,14 @@ class SupabaseRepository:
                   "completed_at": "now", "claimed_by": None, "claimed_at": None},
         )
 
-    @staticmethod
-    def _rate_limited_units_path(run_id: str) -> str:
-        reason = quote(f'"{RATE_LIMIT_REVIEW_REASON}"', safe="")
-        return f"run_units?run_id=eq.{quote(run_id)}&status=eq.requires_review&error_message=eq.{reason}"
+    def _rate_limited_unit_ids(self, run_id: str) -> list[str]:
+        units = self._get_all(
+            f"run_units?run_id=eq.{quote(run_id)}&status=eq.requires_review&select=id,error_message&order=id"
+        )
+        return [unit["id"] for unit in units if unit["error_message"] == RATE_LIMIT_REVIEW_REASON]
 
     def reserve_rate_limited_run(self, run_id: str, heartbeat_at: str) -> bool:
-        if not self._rest("GET", self._rate_limited_units_path(run_id) + "&select=id&limit=1").json():
+        if not self._rate_limited_unit_ids(run_id):
             raise ValueError("No unprocessed units marked for source rate limiting")
         # The existing one-active-run index prevents reopening while another
         # scan is active. Reserve before making any units claimable.
@@ -291,13 +292,18 @@ class SupabaseRepository:
         return bool(rows)
 
     def requeue_rate_limited_units(self, run_id: str) -> int:
-        rows = self._rest(
-            "PATCH", self._rate_limited_units_path(run_id) + "&select=id",
-            headers={"Prefer": "return=representation"},
-            json={"status": "pending", "available_at": "now", "completed_at": None,
-                  "error_message": None, "claimed_by": None, "claimed_at": None},
-        ).json()
-        return len(rows)
+        unit_ids = self._rate_limited_unit_ids(run_id)
+        requeued = 0
+        for offset in range(0, len(unit_ids), 50):
+            ids = ",".join(quote(unit_id, safe="") for unit_id in unit_ids[offset:offset + 50])
+            rows = self._rest(
+                "PATCH", f"run_units?run_id=eq.{quote(run_id)}&id=in.({ids})&status=eq.requires_review&select=id",
+                headers={"Prefer": "return=representation"},
+                json={"status": "pending", "available_at": "now", "completed_at": None,
+                      "error_message": None, "claimed_by": None, "claimed_at": None},
+            ).json()
+            requeued += len(rows)
+        return requeued
 
     def progress_summary(self, run_id: str) -> dict[str, int]:
         rows = self._rest("POST", "rpc/get_run_progress", json={"p_run_id": run_id}).json()
